@@ -1,0 +1,301 @@
+&lt;!--
+    ClipBoard · FINAL · Direction D "Glass × Paper"
+    WPF .NET 8 · 780×640 · Win11
+    背景：毛玻璃淡彩光晕 + 轻纸纹
+    前景：纸质衬线字体 + 虚线列表 + 纸卡表情包 + 圆角悬浮 emoji
+    字体：Fraunces (Google Fonts) + JetBrains Mono + Segoe UI Variable
+    备注：Acrylic/Mica 真机请接 WinRT Composition API；本稿用半透明+Blur 近似。
+-->
+<Window x:Class="ClipBoard.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="ClipBoard" Width="780" Height="640"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        FontFamily="Segoe UI Variable, Segoe UI">
+
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="42" CornerRadius="10"
+                       GlassFrameThickness="0" ResizeBorderThickness="6"/>
+  </shell:WindowChrome.WindowChrome>
+
+  <Window.Resources>
+    <!-- ── palette (final, lightened bg for contrast) ── -->
+    <LinearGradientBrush x:Key="BgGrad" StartPoint="0,0" EndPoint="1,1">
+      <GradientStop Color="#F8F5EE" Offset="0"/>
+      <GradientStop Color="#F5F1E7" Offset="1"/>
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="Paper"        Color="#FDFAF3" Opacity="0.82"/>
+    <SolidColorBrush x:Key="PaperStrong"  Color="#FDFAF3" Opacity="0.96"/>
+    <SolidColorBrush x:Key="Ink"          Color="#2C2418"/>
+    <SolidColorBrush x:Key="Muted"        Color="#857867"/>
+    <SolidColorBrush x:Key="Divider"      Color="#242C2418"/>
+    <SolidColorBrush x:Key="Accent"       Color="#7A4F2B"/>
+    <SolidColorBrush x:Key="AccentSoft"   Color="#1F7A4F2B"/>
+
+    <FontFamily x:Key="Serif">Fraunces, Cormorant Garamond, Georgia</FontFamily>
+    <FontFamily x:Key="Mono">JetBrains Mono, Consolas</FontFamily>
+
+    <!-- caption button -->
+    <Style x:Key="CapBtn" TargetType="Button">
+      <Setter Property="Width" Value="34"/><Setter Property="Height" Value="28"/>
+      <Setter Property="Background" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="{TemplateBinding Background}" CornerRadius="4">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="#14000000"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- underline tab (Fraunces serif + mono EN subtitle) -->
+    <Style x:Key="InkTab" TargetType="RadioButton">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Margin" Value="0,0,24,0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="b" Padding="0,0,0,10" BorderThickness="0,0,0,2" BorderBrush="Transparent">
+              <ContentPresenter VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- dashed list row -->
+    <Style x:Key="PaperRow" TargetType="ListBoxItem">
+      <Setter Property="Padding" Value="12,8"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="b" BorderBrush="{StaticResource Divider}" BorderThickness="0,0,0,1"
+                    Padding="{TemplateBinding Padding}">
+              <Border.BorderBrush>
+                <!-- WPF 无原生 dashed border；用 StrokeDashArray 的 Line 或自定义 Border 替代 -->
+                <SolidColorBrush Color="#242C2418"/>
+              </Border.BorderBrush>
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource AccentSoft}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- emoji 按钮：圆角 10px + 悬浮柔和阴影 -->
+    <Style x:Key="EmojiBtn" TargetType="Button">
+      <Setter Property="Width" Value="44"/><Setter Property="Height" Value="44"/>
+      <Setter Property="FontSize" Value="22"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" CornerRadius="10" Background="Transparent" BorderThickness="1"
+                    BorderBrush="Transparent" Padding="2">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource PaperStrong}"/>
+                <Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Divider}"/>
+                <Setter TargetName="b" Property="Effect">
+                  <Setter.Value>
+                    <DropShadowEffect Color="#2C2418" Opacity="0.08" ShadowDepth="1" BlurRadius="8"/>
+                  </Setter.Value>
+                </Setter>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Border CornerRadius="10" Background="{StaticResource BgGrad}" ClipToBounds="True">
+    <Grid>
+      <!-- ── glass ambient blobs (soft) ── -->
+      <Canvas IsHitTestVisible="False">
+        <Ellipse Width="340" Height="340" Canvas.Left="-90" Canvas.Top="-90" Fill="#5986D1A8">
+          <Ellipse.Effect><BlurEffect Radius="55"/></Ellipse.Effect>
+        </Ellipse>
+        <Ellipse Width="300" Height="300" Canvas.Right="-40" Canvas.Bottom="-60" Fill="#52E3C58C">
+          <Ellipse.Effect><BlurEffect Radius="65"/></Ellipse.Effect>
+        </Ellipse>
+        <Ellipse Width="240" Height="240" Canvas.Left="180" Canvas.Top="260" Fill="#38C9B5E2">
+          <Ellipse.Effect><BlurEffect Radius="75"/></Ellipse.Effect>
+        </Ellipse>
+      </Canvas>
+
+      <!-- ── subtle paper grain overlay (texture asset) ──
+           把 Assets/paper-grain.png (一张 512×512 的柔和纹理, 18% opacity) 放入工程
+      <Image Source="pack://application:,,,/Assets/paper-grain.png"
+             Stretch="UniformToFill" Opacity="0.18" IsHitTestVisible="False"/>
+      -->
+
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="42"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+          <RowDefinition Height="30"/>
+        </Grid.RowDefinitions>
+
+        <!-- title bar -->
+        <DockPanel Grid.Row="0" LastChildFill="False">
+          <StackPanel Orientation="Horizontal" Margin="18,0,0,0" VerticalAlignment="Center" DockPanel.Dock="Left">
+            <TextBlock Text="ClipBoard" FontFamily="{StaticResource Serif}" FontStyle="Italic"
+                       FontSize="15" FontWeight="Medium"/>
+            <TextBlock Text="NO. 042" FontFamily="{StaticResource Mono}" FontSize="10.5"
+                       Foreground="{StaticResource Muted}" Margin="10,2,0,0"/>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right">
+            <Button Style="{StaticResource CapBtn}" Content="📌"/>
+            <Button Style="{StaticResource CapBtn}" Content="⚙"/>
+            <Button Style="{StaticResource CapBtn}" Content="—"/>
+            <Button Style="{StaticResource CapBtn}" Content="▢"/>
+            <Button Style="{StaticResource CapBtn}" Content="✕"/>
+          </StackPanel>
+        </DockPanel>
+
+        <!-- search: paper underline over glass -->
+        <Border Grid.Row="1" Margin="20,12,20,4"
+                BorderBrush="{StaticResource Divider}" BorderThickness="0,0,0,1.5" Padding="0,0,0,6">
+          <DockPanel>
+            <TextBlock Text="🔍" DockPanel.Dock="Left" Foreground="{StaticResource Muted}" Margin="0,0,10,0"/>
+            <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent"
+                     FontSize="14" FontFamily="{StaticResource Serif}" FontStyle="Italic"
+                     Foreground="{StaticResource Ink}" Tag="搜索…"/>
+          </DockPanel>
+        </Border>
+
+        <!-- tabs -->
+        <Border Grid.Row="2" BorderBrush="{StaticResource Divider}" BorderThickness="0,0,0,1" Padding="20,14,20,0">
+          <DockPanel LastChildFill="False">
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+              <RadioButton Style="{StaticResource InkTab}" GroupName="DTabs" IsChecked="True">
+                <StackPanel>
+                  <TextBlock Text="历史" FontFamily="{StaticResource Serif}" FontSize="15" FontWeight="SemiBold"/>
+                  <TextBlock Text="HISTORY" FontFamily="{StaticResource Mono}" FontSize="9" Foreground="{StaticResource Muted}"/>
+                </StackPanel>
+              </RadioButton>
+              <RadioButton Style="{StaticResource InkTab}" GroupName="DTabs">
+                <StackPanel>
+                  <TextBlock Text="图片"   FontFamily="{StaticResource Serif}" FontSize="15"/>
+                  <TextBlock Text="IMAGES" FontFamily="{StaticResource Mono}" FontSize="9" Foreground="{StaticResource Muted}"/>
+                </StackPanel>
+              </RadioButton>
+              <RadioButton Style="{StaticResource InkTab}" GroupName="DTabs">
+                <StackPanel>
+                  <TextBlock Text="emoji" FontFamily="{StaticResource Serif}" FontSize="15"/>
+                  <TextBlock Text="EMOJI" FontFamily="{StaticResource Mono}" FontSize="9" Foreground="{StaticResource Muted}"/>
+                </StackPanel>
+              </RadioButton>
+              <RadioButton Style="{StaticResource InkTab}" GroupName="DTabs">
+                <StackPanel>
+                  <TextBlock Text="表情包" FontFamily="{StaticResource Serif}" FontSize="15"/>
+                  <TextBlock Text="MEMES"  FontFamily="{StaticResource Mono}" FontSize="9" Foreground="{StaticResource Muted}"/>
+                </StackPanel>
+              </RadioButton>
+            </StackPanel>
+            <Button DockPanel.Dock="Right" Background="Transparent" BorderThickness="0"
+                    Foreground="{StaticResource Muted}" Margin="0,0,0,10" Cursor="Hand"
+                    FontFamily="{StaticResource Mono}" FontSize="11" Content="+ new"/>
+          </DockPanel>
+        </Border>
+
+        <!-- content: history sample (绑定时换成 ItemsControl + DataTemplate) -->
+        <ScrollViewer Grid.Row="3" Margin="12,8" VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <!-- history rows -->
+            <Border Padding="12,8" Background="{StaticResource AccentSoft}" BorderThickness="0,0,0,1" BorderBrush="{StaticResource Divider}">
+              <DockPanel LastChildFill="True">
+                <TextBlock DockPanel.Dock="Left"  Width="22" TextAlignment="Right" FontFamily="{StaticResource Mono}" FontSize="10" Foreground="{StaticResource Muted}" Text="01"/>
+                <TextBlock DockPanel.Dock="Right" FontFamily="{StaticResource Mono}" FontSize="10.5" Foreground="{StaticResource Muted}" Text="04-21 20:03"/>
+                <TextBlock DockPanel.Dock="Right" Text="📌" Foreground="{StaticResource Accent}" Margin="0,0,8,0"/>
+                <TextBlock Text="Claude Design + Claude Code" FontFamily="{StaticResource Serif}" FontSize="13.5" Margin="14,0" TextTrimming="CharacterEllipsis"/>
+              </DockPanel>
+            </Border>
+            <Border Padding="12,8" BorderThickness="0,0,0,1" BorderBrush="{StaticResource Divider}">
+              <DockPanel>
+                <TextBlock DockPanel.Dock="Left"  Width="22" TextAlignment="Right" FontFamily="{StaticResource Mono}" FontSize="10" Foreground="{StaticResource Muted}" Text="02"/>
+                <TextBlock DockPanel.Dock="Right" FontFamily="{StaticResource Mono}" FontSize="10.5" Foreground="{StaticResource Muted}" Text="04-21 20:02"/>
+                <TextBlock Text="— image, 1284×812 —" FontStyle="Italic" Foreground="{StaticResource Muted}" Margin="14,0"/>
+              </DockPanel>
+            </Border>
+            <Border Padding="12,8" BorderThickness="0,0,0,1" BorderBrush="{StaticResource Divider}">
+              <DockPanel>
+                <TextBlock DockPanel.Dock="Left"  Width="22" TextAlignment="Right" FontFamily="{StaticResource Mono}" FontSize="10" Foreground="{StaticResource Muted}" Text="03"/>
+                <TextBlock DockPanel.Dock="Right" FontFamily="{StaticResource Mono}" FontSize="10.5" Foreground="{StaticResource Muted}" Text="04-21 20:01"/>
+                <TextBlock Text="after 1m 49s ↵" FontFamily="{StaticResource Serif}" FontSize="13.5" Margin="14,0"/>
+              </DockPanel>
+            </Border>
+            <Border Padding="12,8" BorderThickness="0,0,0,1" BorderBrush="{StaticResource Divider}">
+              <DockPanel>
+                <TextBlock DockPanel.Dock="Left"  Width="22" TextAlignment="Right" FontFamily="{StaticResource Mono}" FontSize="10" Foreground="{StaticResource Muted}" Text="04"/>
+                <TextBlock DockPanel.Dock="Right" FontFamily="{StaticResource Mono}" FontSize="10.5" Foreground="{StaticResource Muted}" Text="04-21 20:00"/>
+                <TextBlock Text="1f1a7e-2" FontFamily="{StaticResource Mono}" Foreground="#3D2E1C" FontSize="13" Margin="14,0"/>
+              </DockPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+
+        <!-- ── alt content templates ──
+             图片 / 表情包:
+               <ItemsControl ItemsSource="{Binding Images}">
+                 <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                 <ItemsControl.ItemTemplate><DataTemplate>
+                   <Border Width="180" Height="180" Margin="6" Padding="6"
+                           Background="{StaticResource PaperStrong}"
+                           BorderBrush="{StaticResource Divider}" BorderThickness="1">
+                     <Border.RenderTransform><RotateTransform Angle="{Binding Skew}"/></Border.RenderTransform>
+                     <Border.Effect><DropShadowEffect Color="#2C2418" Opacity="0.12" ShadowDepth="3" BlurRadius="0"/></Border.Effect>
+                     <Image Source="{Binding Thumb}" Stretch="UniformToFill"/>
+                   </Border>
+                 </DataTemplate></ItemsControl.ItemTemplate>
+               </ItemsControl>
+
+             emoji:
+               <ItemsControl ItemsSource="{Binding Emojis}">
+                 <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                 <ItemsControl.ItemTemplate><DataTemplate>
+                   <Button Style="{StaticResource EmojiBtn}" Content="{Binding}"/>
+                 </DataTemplate></ItemsControl.ItemTemplate>
+               </ItemsControl>
+        -->
+
+        <!-- footer -->
+        <Border Grid.Row="4" Background="{StaticResource Paper}" BorderBrush="{StaticResource Divider}" BorderThickness="0,1,0,0">
+          <TextBlock Margin="18,0" VerticalAlignment="Center" FontFamily="{StaticResource Mono}"
+                     FontSize="10.5" Foreground="{StaticResource Muted}"
+                     Text="ctrl+alt+v — summon    ↑↓ — select    enter — paste    ·    4 entries"/>
+        </Border>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>
