@@ -42,3 +42,6 @@ desktop.ini
 # Logs / temp
 *.log
 *.tmp
+
+# Release artifacts (binaries are attached to GitHub Releases, not committed)
+dist/
