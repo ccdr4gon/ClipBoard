@@ -60,20 +60,26 @@ public class SettingsWindow : Window
         };
         void RefreshStatus()
         {
-            if (StartupService.PointsToCurrentExe())
+            if (StartupService.IsVerified)
             {
                 startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0x1B, 0x8A, 0x3A));
-                startupStatus.Text = "✓ 注册表已确认：开机将启动\n" + StartupService.CurrentValue();
+                startupStatus.Text = "✓ 注册表已确认：开机将启动（指向安装版）\n" + StartupService.CurrentValue();
+            }
+            else if (!StartupService.IsInstalled)
+            {
+                startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xC9, 0x6A, 0x00));
+                startupStatus.Text = "⚠ 未检测到安装版，开机自启动需要安装版（框架依赖的开发构建在开机时常拉不起来）。\n"
+                                     + "请把自包含单文件放到：" + StartupService.InstallPath;
             }
             else if (StartupService.IsEnabled())
             {
                 startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xC9, 0x6A, 0x00));
-                startupStatus.Text = "⚠ 注册表存在自启动项，但路径不是当前程序：\n" + StartupService.CurrentValue();
+                startupStatus.Text = "⚠ 自启动项存在但未指向安装版：\n" + StartupService.CurrentValue();
             }
             else
             {
                 startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xC0, 0x39, 0x2B));
-                startupStatus.Text = "✗ 注册表中没有自启动项（开机不会启动）";
+                startupStatus.Text = "✗ 未设置开机自启动";
             }
         }
         RefreshStatus();
