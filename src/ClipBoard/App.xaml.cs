@@ -66,12 +66,12 @@ public partial class App : Application
             }
         };
 
-        // 同步注册表：默认开启自启动；路径变更（如移动 exe）时也会刷新。
-        // 写入后回读校验，并把“注册表真实状态”写入 startup.log，便于确认是否真的开机启动。
+        // 同步注册表：自启动只会指向安装版（见 StartupService）。即使从 Debug 版启动也不会把自启动改坏。
+        // 写入后回读校验，并把"注册表真实状态"写入 startup.log，便于确认是否真的开机启动。
         bool applied = StartupService.Apply(Settings.StartWithWindows);
         LogStartup($"launched. desired={Settings.StartWithWindows} verified={applied} " +
-                   $"enabled={StartupService.IsEnabled()} pointsToCurrentExe={StartupService.PointsToCurrentExe()} " +
-                   $"regValue={StartupService.CurrentValue() ?? "<none>"} exe={StartupService.ExePath}");
+                   $"installed={StartupService.IsInstalled} runningFrom={StartupService.ProcessPath} " +
+                   $"target={StartupService.AutostartTarget ?? "<none>"} regValue={StartupService.CurrentValue() ?? "<none>"}");
 
         _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
         EnsureTrayIconVisible();
