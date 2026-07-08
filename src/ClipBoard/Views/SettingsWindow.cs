@@ -65,6 +65,17 @@ public class SettingsWindow : Window
                 startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0x1B, 0x8A, 0x3A));
                 startupStatus.Text = "✓ 注册表已确认：开机将启动（指向安装版）\n" + StartupService.CurrentValue();
             }
+            // StartupApproved 状态比"是否安装"更具体：便携版运行时也可能被任务管理器禁用，先判它。
+            else if (StartupService.IsEnabled() && StartupService.ApprovedState == false)
+            {
+                startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xC9, 0x6A, 0x00));
+                startupStatus.Text = "⚠ 已在任务管理器的「启动应用」里被禁用，Windows 不会启动它。\n取消勾选后重新勾选可强制重新启用。";
+            }
+            else if (StartupService.IsEnabled() && StartupService.ApprovedState is null)
+            {
+                startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xC9, 0x6A, 0x00));
+                startupStatus.Text = "⚠ 缺少 StartupApproved 启用标记，本机 explorer 会静默跳过它。\n取消勾选后重新勾选可修复。";
+            }
             else if (!StartupService.IsInstalled)
             {
                 startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xC9, 0x6A, 0x00));

@@ -18,11 +18,23 @@ public partial class App : Application
     private ClipboardMonitor? _clipboardMonitor;
     private HotKeyService? _hotKey;
 
+    // 单实例保护：自启动 + 手动启动会跑出两个实例（双托盘图标、历史重复、持久化互相覆盖）。
+    // 持有字段引用防止被 GC；进程退出时由系统释放。
+    private static Mutex? _singleInstanceMutex;
+
     private static readonly string CrashLog = System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard", "crash.log");
 
     private void OnStartup(object sender, StartupEventArgs e)
     {
+        _singleInstanceMutex = new Mutex(initiallyOwned: true, @"Local\ClipBoard.SingleInstance", out bool createdNew);
+        if (!createdNew)
+        {
+            LogStartup($"another instance is running, exiting. runningFrom={StartupService.ProcessPath}");
+            Shutdown();
+            return;
+        }
+
         DispatcherUnhandledException += (_, args) =>
         {
             LogCrash("DispatcherUnhandled", args.Exception);
@@ -61,17 +73,20 @@ public partial class App : Application
             Favorites.Save();
             if (args.PropertyName == nameof(AppSettings.StartWithWindows))
             {
-                bool ok = StartupService.Apply(Settings.StartWithWindows);
-                LogStartup($"toggle -> {Settings.StartWithWindows}, verified={ok}");
+                // 用户在设置界面主动勾选：应用内设置是唯一权威，允许覆盖任务管理器里的禁用标记。
+                bool ok = StartupService.Apply(Settings.StartWithWindows, userInitiated: true);
+                LogStartup($"toggle -> {Settings.StartWithWindows}, verified={ok} approved={StartupService.ApprovedStateText}");
             }
         };
 
         // 同步注册表：自启动只会指向安装版（见 StartupService）。即使从 Debug 版启动也不会把自启动改坏。
+        // 静默同步不覆盖任务管理器里的禁用标记（userInitiated 默认 false），只补写缺失的启用标记。
         // 写入后回读校验，并把"注册表真实状态"写入 startup.log，便于确认是否真的开机启动。
         bool applied = StartupService.Apply(Settings.StartWithWindows);
         LogStartup($"launched. desired={Settings.StartWithWindows} verified={applied} " +
                    $"installed={StartupService.IsInstalled} runningFrom={StartupService.ProcessPath} " +
-                   $"target={StartupService.AutostartTarget ?? "<none>"} regValue={StartupService.CurrentValue() ?? "<none>"}");
+                   $"target={StartupService.AutostartTarget ?? "<none>"} regValue={StartupService.CurrentValue() ?? "<none>"} " +
+                   $"approved={StartupService.ApprovedStateText}");
 
         _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
         EnsureTrayIconVisible();

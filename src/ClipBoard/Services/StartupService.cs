@@ -11,11 +11,20 @@ namespace ClipBoard.Services;
 /// 因此“构建并运行 Debug 版做测试”不会再把开机自启动改坏——
 /// 即使从 Debug 版启动，它也只会把 Run 键维护成安装版的路径。
 /// （框架依赖的 Debug 构建在 Windows 登录时经常静默拉不起来，所以只能让安装版自启。）
+///
+/// 除 Run 键外还必须维护 StartupApproved 的“已启用”标记：
+/// 本机（Win11 25H2）的 explorer 登录时只启动带显式 02 标记的 HKCU Run 项，
+/// 缺失标记的项会被静默跳过（历史行为本是“缺失=启用”，此为 24H2/25H2 的回归）。
 /// </summary>
 public static class StartupService
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string ApprovedKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
     private const string ValueName = "ClipBoard";
+
+    // StartupApproved 的“已启用”标志：首字节 02，其余 11 字节清零
+    //（任务管理器禁用时首字节改奇数，后 8 字节存放禁用时刻的 FILETIME）。
+    private static readonly byte[] ApprovedEnabledBlob = { 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     /// <summary>规范安装路径：%LOCALAPPDATA%\Programs\ClipBoard\ClipBoard.exe</summary>
     public static string InstallPath => Path.Combine(
@@ -52,11 +61,41 @@ public static class StartupService
         AutostartTarget is { Length: > 0 } t ? $"\"{t}\"" : null;
 
     /// <summary>
+    /// StartupApproved 三态：null=标记不存在，true=显式启用（首字节偶数），false=被任务管理器禁用（首字节奇数）。
+    /// </summary>
+    public static bool? ApprovedState
+    {
+        get
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(ApprovedKeyPath);
+                return key?.GetValue(ValueName) is byte[] { Length: > 0 } b ? (b[0] & 0x01) == 0 : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>诊断 / 日志用的 StartupApproved 状态文本。</summary>
+    public static string ApprovedStateText => ApprovedState switch
+    {
+        true => "enabled",
+        false => "disabled(任务管理器)",
+        null => "<missing>",
+    };
+
+    /// <summary>
     /// 写入 / 删除自启动项；写入后回读校验。
     /// 开启时始终写 <see cref="AutostartTarget"/>；若没有合适目标（只有构建输出可用）则保持现状不动。
-    /// 关闭时删除。返回注册表最终状态是否符合期望。
+    /// 同时确保 StartupApproved 启用标记：标记缺失时补写 02；
+    /// 已被任务管理器禁用（奇数首字节）时只有用户在设置界面主动勾选（userInitiated）才覆盖回 02，
+    /// 开机静默同步尊重用户在任务管理器里的选择，绝不悄悄翻回去。
+    /// 关闭时两处一并删除。返回注册表最终状态是否符合期望。
     /// </summary>
-    public static bool Apply(bool enable)
+    public static bool Apply(bool enable, bool userInitiated = false)
     {
         try
         {
@@ -67,11 +106,21 @@ public static class StartupService
                                 ?? Registry.CurrentUser.CreateSubKey(RunKeyPath);
                 if (key is null) return false;
                 key.SetValue(ValueName, ExpectedValue, RegistryValueKind.String);
+
+                var approved = ApprovedState;
+                if (approved is null || (approved == false && userInitiated))
+                {
+                    using var ak = Registry.CurrentUser.CreateSubKey(ApprovedKeyPath);
+                    ak?.SetValue(ValueName, ApprovedEnabledBlob, RegistryValueKind.Binary);
+                }
             }
             else
             {
                 using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
                 key?.DeleteValue(ValueName, throwOnMissingValue: false);
+                // 孤立的 StartupApproved 标记会残留在任务管理器的启动应用列表里，一并清掉。
+                using var ak = Registry.CurrentUser.OpenSubKey(ApprovedKeyPath, writable: true);
+                ak?.DeleteValue(ValueName, throwOnMissingValue: false);
             }
         }
         catch
@@ -85,14 +134,18 @@ public static class StartupService
     /// <summary>注册表里是否存在非空自启动项。</summary>
     public static bool IsEnabled() => !string.IsNullOrEmpty(CurrentValue());
 
-    /// <summary>Run 键是否确实指向当前应有的自启动目标（安装版）。</summary>
+    /// <summary>
+    /// Windows 是否确实会在开机时启动它：Run 键指向当前应有的自启动目标（安装版），
+    /// 且 StartupApproved 为显式启用——缺失或被任务管理器禁用时 explorer 都不会启动。
+    /// </summary>
     public static bool IsVerified
     {
         get
         {
             var cur = CurrentValue();
             return !string.IsNullOrEmpty(cur) && ExpectedValue != null
-                   && string.Equals(cur, ExpectedValue, StringComparison.OrdinalIgnoreCase);
+                   && string.Equals(cur, ExpectedValue, StringComparison.OrdinalIgnoreCase)
+                   && ApprovedState == true;
         }
     }
 
