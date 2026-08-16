@@ -14,7 +14,7 @@ public class HotKeyService : IDisposable
     private const int HOTKEY_ID    = 0xC1B0;
     private const uint VK_V        = 0x56;
 
-    [DllImport("user32.dll")] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
     [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     private readonly Window _window;
@@ -24,6 +24,9 @@ public class HotKeyService : IDisposable
     private bool _disposed;
 
     public event EventHandler? HotKeyPressed;
+
+    /// <summary>热键是否注册成功。失败通常是被别的程序占用了 Ctrl+Alt+V。</summary>
+    public bool IsRegistered => _registered;
 
     public HotKeyService(Window window)
     {
@@ -39,12 +42,13 @@ public class HotKeyService : IDisposable
         _source = HwndSource.FromHwnd(_hwnd);
         _source?.AddHook(WndProc);
         _registered = RegisterHotKey(_hwnd, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_V);
+        // 这里绝不能弹模态框：Attach() 在 OnStartup 的启动路径上，
+        // 开机时弹窗会把整个启动流程卡死在无人点击的对话框上（托盘图标也就永远出不来）。
+        // 失败只记日志，设置窗口里再向用户展示。
         if (!_registered)
-        {
-            System.Windows.MessageBox.Show(
-                "快捷键 Ctrl+Alt+V 注册失败（可能被其他程序占用）。\n可在托盘菜单退出后修改 HotKeyService.cs 选其他组合。",
-                "ClipBoard", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
-        }
+            DiagLog.Write("hotkey", $"RegisterHotKey(Ctrl+Alt+V) FAILED, win32Error={Marshal.GetLastWin32Error()} (可能被其他程序占用)");
+        else
+            DiagLog.Write("hotkey", $"RegisterHotKey(Ctrl+Alt+V) ok hwnd={_hwnd:X}");
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)

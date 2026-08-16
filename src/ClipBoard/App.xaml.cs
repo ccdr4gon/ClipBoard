@@ -27,31 +27,47 @@ public partial class App : Application
 
     private void OnStartup(object sender, StartupEventArgs e)
     {
+        DiagLog.Write("startup", "OnStartup entered");
+
         _singleInstanceMutex = new Mutex(initiallyOwned: true, @"Local\ClipBoard.SingleInstance", out bool createdNew);
         if (!createdNew)
         {
+            DiagLog.Write("startup", "another instance already holds the mutex, exiting");
             LogStartup($"another instance is running, exiting. runningFrom={StartupService.ProcessPath}");
             Shutdown();
             return;
         }
+        DiagLog.Write("startup", "single-instance mutex acquired");
 
         DispatcherUnhandledException += (_, args) =>
         {
+            DiagLog.Error("crash", "DispatcherUnhandled", args.Exception);
             LogCrash("DispatcherUnhandled", args.Exception);
             args.Handled = true;
         };
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
-            if (args.ExceptionObject is Exception ex) LogCrash("AppDomain", ex);
+            if (args.ExceptionObject is Exception ex)
+            {
+                DiagLog.Error("crash", $"AppDomain terminating={args.IsTerminating}", ex);
+                LogCrash("AppDomain", ex);
+            }
         };
         System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, args) =>
         {
+            DiagLog.Error("crash", "TaskUnobserved", args.Exception);
             LogCrash("TaskUnobserved", args.Exception);
             args.SetObserved();
         };
+        DiagLog.Write("startup", "exception handlers installed");
 
-        Persistence = new PersistenceService();
-        var persisted = Persistence.Load();
+        PersistedData persisted;
+        using (DiagLog.Phase("persistence-load"))
+        {
+            Persistence = new PersistenceService();
+            persisted = Persistence.Load();
+            DiagLog.Write("startup", $"loaded history={persisted.History.Count} folders={persisted.Favorites?.Count ?? 0}");
+        }
 
         Settings = persisted.Settings;
         Favorites = new FavoritesStore(Persistence, persisted);
@@ -59,13 +75,24 @@ public partial class App : Application
         History.SetPersistence(Persistence);
         Favorites.SetHistoryStore(History);
 
-        foreach (var item in persisted.History)
+        using (DiagLog.Phase("blob-load"))
         {
-            if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
-                item.Image = Persistence.LoadImageThumbnail(item.ImageBlobName); // 只载入缩略图，避免启动时把上百张大图全分辨率读进内存
-            else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
-                item.GifBytes = Persistence.LoadGifBlob(item.GifBlobName);
-            History.Items.Add(item);
+            int images = 0, gifs = 0;
+            foreach (var item in persisted.History)
+            {
+                if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
+                {
+                    item.Image = Persistence.LoadImageThumbnail(item.ImageBlobName); // 只载入缩略图，避免启动时把上百张大图全分辨率读进内存
+                    images++;
+                }
+                else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
+                {
+                    item.GifBytes = Persistence.LoadGifBlob(item.GifBlobName);
+                    gifs++;
+                }
+                History.Items.Add(item);
+            }
+            DiagLog.Write("startup", $"blobs decoded: images={images} gifs={gifs}");
         }
 
         Settings.PropertyChanged += (_, args) =>
@@ -74,33 +101,64 @@ public partial class App : Application
             if (args.PropertyName == nameof(AppSettings.StartWithWindows))
             {
                 // 用户在设置界面主动勾选：应用内设置是唯一权威，允许覆盖任务管理器里的禁用标记。
-                bool ok = StartupService.Apply(Settings.StartWithWindows, userInitiated: true);
-                LogStartup($"toggle -> {Settings.StartWithWindows}, verified={ok} approved={StartupService.ApprovedStateText}");
+                bool ok = StartupService.ApplyAll(Settings.StartWithWindows, userInitiated: true);
+                DiagLog.Write("autostart", $"user toggled -> {Settings.StartWithWindows}, verified={ok} | {StartupService.Describe()}");
+                LogStartup($"toggle -> {Settings.StartWithWindows}, verified={ok}");
             }
         };
 
-        // 同步注册表：自启动只会指向安装版（见 StartupService）。即使从 Debug 版启动也不会把自启动改坏。
-        // 静默同步不覆盖任务管理器里的禁用标记（userInitiated 默认 false），只补写缺失的启用标记。
-        // 写入后回读校验，并把"注册表真实状态"写入 startup.log，便于确认是否真的开机启动。
-        bool applied = StartupService.Apply(Settings.StartWithWindows);
-        LogStartup($"launched. desired={Settings.StartWithWindows} verified={applied} " +
-                   $"installed={StartupService.IsInstalled} runningFrom={StartupService.ProcessPath} " +
-                   $"target={StartupService.AutostartTarget ?? "<none>"} regValue={StartupService.CurrentValue() ?? "<none>"} " +
-                   $"approved={StartupService.ApprovedStateText}");
+        using (DiagLog.Phase("tray-icon"))
+        {
+            _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
+            EnsureTrayIconVisible();
+        }
 
-        _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
-        EnsureTrayIconVisible();
+        using (DiagLog.Phase("main-window"))
+        {
+            _mainWindow = new MainWindow();
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(_mainWindow).EnsureHandle();
+            _mainWindow.Hide();
+            DiagLog.Write("startup", $"MainWindow hwnd={hwnd:X}");
+        }
 
-        _mainWindow = new MainWindow();
-        new System.Windows.Interop.WindowInteropHelper(_mainWindow).EnsureHandle();
-        _mainWindow.Hide();
+        using (DiagLog.Phase("clipboard-monitor"))
+        {
+            _clipboardMonitor = new ClipboardMonitor(_mainWindow!);
+            _clipboardMonitor.ClipboardChanged += OnClipboardChanged;
+        }
 
-        _clipboardMonitor = new ClipboardMonitor(_mainWindow);
-        _clipboardMonitor.ClipboardChanged += OnClipboardChanged;
+        using (DiagLog.Phase("hotkey"))
+        {
+            _hotKey = new HotKeyService(_mainWindow!);
+            _hotKey.HotKeyPressed += (_, _) => _mainWindow!.ShowPanel();
+        }
 
-        _hotKey = new HotKeyService(_mainWindow);
-        _hotKey.HotKeyPressed += (_, _) => _mainWindow!.ShowPanel();
+        DiagLog.Write("startup", $"=== startup complete in {DiagLog.ElapsedMs}ms ===");
+
+        // 自启动同步放到最后、且在后台线程：它要连任务计划服务（跨进程 COM），
+        // 登录高峰时可能慢。绝不能让它挡在托盘图标前面——那正是「进程在跑但托盘没图标」的成因。
+        SyncAutostartInBackground();
     }
+
+    /// <summary>后台同步两条自启动路径（注册表 Run 项 + 任务计划登录任务），并把真实状态写进日志。</summary>
+    private static void SyncAutostartInBackground() => System.Threading.Tasks.Task.Run(() =>
+    {
+        try
+        {
+            using (DiagLog.Phase("autostart-sync"))
+            {
+                // 静默同步：不覆盖用户在任务管理器里的禁用选择（userInitiated 默认 false）。
+                bool applied = StartupService.ApplyAll(Settings.StartWithWindows);
+                DiagLog.Write("autostart", $"desired={Settings.StartWithWindows} verified={applied} | {StartupService.Describe()}");
+                LogStartup($"launched. desired={Settings.StartWithWindows} verified={applied} " +
+                           $"parent={DiagLog.ParentDescription} | {StartupService.Describe()}");
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagLog.Error("autostart", "background sync failed", ex);
+        }
+    });
 
     private void OnClipboardChanged(object? sender, ClipboardChangedEventArgs e)
     {
@@ -135,10 +193,13 @@ public partial class App : Application
 
     private void OnExit(object sender, ExitEventArgs e)
     {
+        // 有这行才说明是正常退出；开机后日志里只有启动没有这行 = 进程被杀或崩溃。
+        DiagLog.Write("exit", $"OnExit code={e.ApplicationExitCode} aliveFor={DiagLog.ElapsedMs}ms");
         _hotKey?.Dispose();
         _clipboardMonitor?.Dispose();
         _trayIcon?.Dispose();
         Persistence?.FlushSync();
+        DiagLog.Write("exit", "=== clean shutdown ===");
     }
 
     private static readonly string StartupLog = System.IO.Path.Combine(
@@ -163,11 +224,18 @@ public partial class App : Application
         void Reassert()
         {
             if (_trayIcon is null) return;
+            // 托盘自定义 tooltip 靠系统 NIN_POPUPCLOSE 消息关闭；图标被移除的瞬间若 tooltip
+            // 正开着，该消息永远不会到来，tooltip 会作为孤儿窗口永久悬浮在屏幕上。
+            // 所以重建图标前必须先把 tooltip / 菜单弹窗关掉。
+            CloseTrayPopups();
             _trayIcon.Visibility = Visibility.Collapsed;
             _trayIcon.Visibility = Visibility.Visible;
+            HookTrayTooltipLifetimeCap();
+            DiagLog.Write("tray", $"icon visibility re-asserted at +{DiagLog.ElapsedMs}ms");
         }
 
-        foreach (var seconds in new[] { 3, 10 })
+        HookTrayTooltipLifetimeCap();
+        foreach (var seconds in new[] { 3, 10, 30 })
         {
             var timer = new System.Windows.Threading.DispatcherTimer
             {
@@ -180,6 +248,46 @@ public partial class App : Application
             };
             timer.Start();
         }
+    }
+
+    private void CloseTrayPopups()
+    {
+        if (_trayIcon?.TrayToolTipResolved is System.Windows.Controls.ToolTip tip && tip.IsOpen)
+        {
+            tip.IsOpen = false;
+            DiagLog.Write("tray", "closed open tray tooltip before icon re-create");
+        }
+        if (_trayIcon?.ContextMenu is { IsOpen: true } menu)
+            menu.IsOpen = false;
+    }
+
+    // 兜底：无论哪条路径（图标重建、explorer 重启等）让托盘 tooltip 错过关闭消息，
+    // 都在打开 30 秒后强制关掉，保证不会永久残留。TrayToolTipResolved 是惰性创建的，
+    // 所以在启动和每次重建后都尝试挂接一次，用标志防止重复订阅。
+    private bool _trayTipCapHooked;
+    private void HookTrayTooltipLifetimeCap()
+    {
+        if (_trayTipCapHooked) return;
+        if (_trayIcon?.TrayToolTipResolved is not System.Windows.Controls.ToolTip tip) return;
+        _trayTipCapHooked = true;
+
+        System.Windows.Threading.DispatcherTimer? cap = null;
+        tip.Opened += (_, _) =>
+        {
+            cap?.Stop();
+            cap = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            cap.Tick += (s, _) =>
+            {
+                ((System.Windows.Threading.DispatcherTimer)s!).Stop();
+                if (tip.IsOpen)
+                {
+                    tip.IsOpen = false;
+                    DiagLog.Write("tray", "tooltip lifetime cap hit, force-closed");
+                }
+            };
+            cap.Start();
+        };
+        tip.Closed += (_, _) => cap?.Stop();
     }
 
     private static void LogCrash(string source, Exception ex)

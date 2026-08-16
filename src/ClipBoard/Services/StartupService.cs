@@ -128,17 +128,70 @@ public static class StartupService
             return false;
         }
 
-        return enable ? IsVerified : !IsEnabled();
+        return enable ? RunVerified : !IsEnabled();
+    }
+
+    /// <summary>
+    /// 同时维护注册表 Run 项与任务计划登录任务，返回「下次开机是否真的会被拉起」。
+    ///
+    /// 之所以两条路都留：这台机器上 explorer 的 Run 枚举从未启动过本程序
+    /// （见 <see cref="ScheduledTaskService"/> 的说明），任务计划是可靠的那条；
+    /// Run 项保留作冗余，App 的单实例锁保证不会重复启动。
+    /// </summary>
+    public static bool ApplyAll(bool enable, bool userInitiated = false)
+    {
+        bool runOk = Apply(enable, userInitiated);
+
+        bool taskOk;
+        if (enable)
+        {
+            var target = AutostartTarget;
+            if (target is null)
+            {
+                taskOk = false; // 只有构建输出可用：不注册，避免把 bin\Debug 当自启目标
+            }
+            else
+            {
+                var snap = ScheduledTaskService.Query(target);
+                // Unavailable 也重试：注册是幂等的（CREATE_OR_UPDATE），
+                // 任务计划服务在登录高峰偶发不可用，不该让自启动一直坏着。
+                bool needRegister = snap.State is TaskStartupState.Missing
+                                                or TaskStartupState.Mismatched
+                                                or TaskStartupState.Unavailable
+                                    || (snap.State == TaskStartupState.Disabled && userInitiated);
+                taskOk = needRegister ? ScheduledTaskService.Register(target)
+                                      : snap.State == TaskStartupState.Ok;
+            }
+        }
+        else
+        {
+            taskOk = ScheduledTaskService.Unregister();
+        }
+
+        return enable ? (taskOk || runOk) : (taskOk && runOk);
+    }
+
+    /// <summary>登录任务的当前状态。</summary>
+    public static TaskStartupState TaskState => ScheduledTaskService.Query(AutostartTarget).State;
+
+    /// <summary>一行诊断文本：两条自启动路径的真实状态，写进日志用。</summary>
+    public static string Describe()
+    {
+        var snap = ScheduledTaskService.Query(AutostartTarget);
+        return $"installed={IsInstalled} runningFrom={ProcessPath} target={AutostartTarget ?? "<none>"} " +
+               $"| run: value={CurrentValue() ?? "<none>"} approved={ApprovedStateText} verified={RunVerified} " +
+               $"| task: state={snap.State} command={snap.Command ?? "<none>"}";
     }
 
     /// <summary>注册表里是否存在非空自启动项。</summary>
     public static bool IsEnabled() => !string.IsNullOrEmpty(CurrentValue());
 
     /// <summary>
-    /// Windows 是否确实会在开机时启动它：Run 键指向当前应有的自启动目标（安装版），
+    /// 注册表这条路是否完备：Run 键指向当前应有的自启动目标（安装版），
     /// 且 StartupApproved 为显式启用——缺失或被任务管理器禁用时 explorer 都不会启动。
+    /// 注意：本机上即使这里为 true，explorer 实测仍可能不启动它，所以还有任务计划那条路。
     /// </summary>
-    public static bool IsVerified
+    public static bool RunVerified
     {
         get
         {
@@ -148,6 +201,9 @@ public static class StartupService
                    && ApprovedState == true;
         }
     }
+
+    /// <summary>下次开机是否真的会被拉起：两条路径任意一条完备即可。</summary>
+    public static bool IsVerified => TaskState == TaskStartupState.Ok || RunVerified;
 
     /// <summary>返回注册表里当前存的命令字符串（诊断/界面用），不存在则 null。</summary>
     public static string? CurrentValue()

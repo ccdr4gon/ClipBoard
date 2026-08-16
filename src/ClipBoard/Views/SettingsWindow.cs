@@ -60,10 +60,20 @@ public class SettingsWindow : Window
         };
         void RefreshStatus()
         {
-            if (StartupService.IsVerified)
+            var taskState = StartupService.TaskState;
+            if (taskState == TaskStartupState.Ok)
             {
                 startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0x1B, 0x8A, 0x3A));
-                startupStatus.Text = "✓ 注册表已确认：开机将启动（指向安装版）\n" + StartupService.CurrentValue();
+                startupStatus.Text = "✓ 已通过「任务计划程序」登录任务自启动（登录后延迟 10 秒）\n"
+                                     + (StartupService.RunVerified
+                                         ? "同时保留了注册表 Run 项作冗余。"
+                                         : "注册表 Run 项未生效，但不影响自启动。");
+            }
+            else if (StartupService.RunVerified)
+            {
+                startupStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xC9, 0x6A, 0x00));
+                startupStatus.Text = "⚠ 仅注册表 Run 项可用，登录任务未创建（状态：" + taskState + "）。\n"
+                                     + "本机 explorer 实测会跳过 Run 项，建议取消勾选后重新勾选以创建登录任务。";
             }
             // StartupApproved 状态比"是否安装"更具体：便携版运行时也可能被任务管理器禁用，先判它。
             else if (StartupService.IsEnabled() && StartupService.ApprovedState == false)
