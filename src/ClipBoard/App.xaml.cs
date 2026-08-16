@@ -218,23 +218,25 @@ public partial class App : Application
     }
 
     // 登录时托盘程序常与 explorer 初始化通知区域竞态，导致图标不显示（进程其实已在跑）。
-    // 在启动后延迟重新断言一次图标可见性，强制重新向通知区域注册。
+    // 在启动后延迟重新断言图标可见性，强制重新向通知区域注册。
+    // 仅在原生图标确实没注册成功时才重建：无谓的删除/重建会刺激 shell 发出
+    // 无悬停的 NIN_POPUPOPEN（正是「贴条无故出现」的诱因），也会让图标闪烁。
     private void EnsureTrayIconVisible()
     {
         void Reassert()
         {
             if (_trayIcon is null) return;
-            // 托盘自定义 tooltip 靠系统 NIN_POPUPCLOSE 消息关闭；图标被移除的瞬间若 tooltip
-            // 正开着，该消息永远不会到来，tooltip 会作为孤儿窗口永久悬浮在屏幕上。
-            // 所以重建图标前必须先把 tooltip / 菜单弹窗关掉。
+            if (_trayIcon.IsTaskbarIconCreated)
+            {
+                DiagLog.Write("tray", $"icon already registered at +{DiagLog.ElapsedMs}ms, skip re-assert");
+                return;
+            }
             CloseTrayPopups();
             _trayIcon.Visibility = Visibility.Collapsed;
             _trayIcon.Visibility = Visibility.Visible;
-            HookTrayTooltipLifetimeCap();
-            DiagLog.Write("tray", $"icon visibility re-asserted at +{DiagLog.ElapsedMs}ms");
+            DiagLog.Write("tray", $"icon visibility re-asserted at +{DiagLog.ElapsedMs}ms (created={_trayIcon.IsTaskbarIconCreated})");
         }
 
-        HookTrayTooltipLifetimeCap();
         foreach (var seconds in new[] { 3, 10, 30 })
         {
             var timer = new System.Windows.Threading.DispatcherTimer
@@ -248,6 +250,8 @@ public partial class App : Application
             };
             timer.Start();
         }
+
+        StartTrayTooltipWatchdog();
     }
 
     private void CloseTrayPopups()
@@ -261,33 +265,35 @@ public partial class App : Application
             menu.IsOpen = false;
     }
 
-    // 兜底：无论哪条路径（图标重建、explorer 重启等）让托盘 tooltip 错过关闭消息，
-    // 都在打开 30 秒后强制关掉，保证不会永久残留。TrayToolTipResolved 是惰性创建的，
-    // 所以在启动和每次重建后都尝试挂接一次，用标志防止重复订阅。
-    private bool _trayTipCapHooked;
-    private void HookTrayTooltipLifetimeCap()
+    // 兜底看门狗：XAML 已不再设置 ToolTipText，TrayToolTipResolved 应恒为 null、贴条不可能出现。
+    // 但仍每 15 秒轮询一次（每次都取当前实例，不依赖事件挂接），发现任何打开超过 ~30 秒的
+    // 托盘 tooltip 一律强制关闭并记日志——若日后有人重新加回 ToolTipText，这层保护依然有效。
+    private System.Windows.Threading.DispatcherTimer? _tipWatchdog;
+    private DateTime _tipOpenSince = DateTime.MinValue;
+    private void StartTrayTooltipWatchdog()
     {
-        if (_trayTipCapHooked) return;
-        if (_trayIcon?.TrayToolTipResolved is not System.Windows.Controls.ToolTip tip) return;
-        _trayTipCapHooked = true;
-
-        System.Windows.Threading.DispatcherTimer? cap = null;
-        tip.Opened += (_, _) =>
+        _tipWatchdog = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        _tipWatchdog.Tick += (_, _) =>
         {
-            cap?.Stop();
-            cap = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
-            cap.Tick += (s, _) =>
+            if (_trayIcon?.TrayToolTipResolved is System.Windows.Controls.ToolTip tip && tip.IsOpen)
             {
-                ((System.Windows.Threading.DispatcherTimer)s!).Stop();
-                if (tip.IsOpen)
+                if (_tipOpenSince == DateTime.MinValue)
+                {
+                    _tipOpenSince = DateTime.UtcNow;
+                }
+                else if ((DateTime.UtcNow - _tipOpenSince).TotalSeconds >= 30)
                 {
                     tip.IsOpen = false;
-                    DiagLog.Write("tray", "tooltip lifetime cap hit, force-closed");
+                    _tipOpenSince = DateTime.MinValue;
+                    DiagLog.Write("tray", "watchdog force-closed a stuck tray tooltip");
                 }
-            };
-            cap.Start();
+            }
+            else
+            {
+                _tipOpenSince = DateTime.MinValue;
+            }
         };
-        tip.Closed += (_, _) => cap?.Stop();
+        _tipWatchdog.Start();
     }
 
     private static void LogCrash(string source, Exception ex)
