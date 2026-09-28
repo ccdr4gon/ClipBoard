@@ -33,6 +33,7 @@ def main():
     subprocess.run(["dotnet", "publish", str(ROOT / "src/ClipBoard.Mac/ClipBoard.Mac.csproj"),
                     "-c", "Release", "-r", f"osx-{args.arch}", "--self-contained", "true",
                     "-p:UseAppHost=true", "-p:PublishTrimmed=false", "-p:PublishSingleFile=true",
+                    "-p:DebugType=None", "-p:DebugSymbols=false",
                     "-p:IncludeNativeLibrariesForSelfExtract=false", "-o", str(binary)], check=True)
     info = {
         "CFBundleName": "ClipBoard", "CFBundleDisplayName": "ClipBoard",
