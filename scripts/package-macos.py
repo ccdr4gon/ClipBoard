@@ -32,7 +32,8 @@ def main():
     binary.mkdir(parents=True)
     subprocess.run(["dotnet", "publish", str(ROOT / "src/ClipBoard.Mac/ClipBoard.Mac.csproj"),
                     "-c", "Release", "-r", f"osx-{args.arch}", "--self-contained", "true",
-                    "-p:UseAppHost=true", "-p:PublishTrimmed=false", "-o", str(binary)], check=True)
+                    "-p:UseAppHost=true", "-p:PublishTrimmed=false", "-p:PublishSingleFile=true",
+                    "-p:IncludeNativeLibrariesForSelfExtract=false", "-o", str(binary)], check=True)
     info = {
         "CFBundleName": "ClipBoard", "CFBundleDisplayName": "ClipBoard",
         "CFBundleExecutable": "ClipBoard.Mac", "CFBundleIdentifier": "io.github.ccdr4gon.clipboard",
@@ -48,7 +49,9 @@ def main():
             file.chmod(0o755 if file.name == "ClipBoard.Mac" or file.suffix == ".dylib" else 0o644)
     if sys.platform == "darwin":
         for file in binary.rglob("*"):
-            if file.is_file() and (file.name == "ClipBoard.Mac" or file.suffix == ".dylib"):
+            # Sign nested native libraries first. Signing the app host can implicitly sign its bundle.
+            # Managed assemblies are embedded in the host, avoiding unsigned PE files in Contents/MacOS.
+            if file.is_file() and file.suffix == ".dylib":
                 sign(file, args.sign)
         sign(bundle, args.sign)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
