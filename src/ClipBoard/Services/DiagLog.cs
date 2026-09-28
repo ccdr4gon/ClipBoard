@@ -43,6 +43,10 @@ public static class DiagLog
     /// <summary>
     /// 模块初始化：CLR 加载本程序集时立即执行，是本进程能写日志的最早时刻。
     /// 整体 try/catch —— 诊断日志绝不能成为启动失败的原因。
+    ///
+    /// 这里只写一行「见证日志」：任务计划每 15 分钟就会重试拉起一次，
+    /// 绝大多数进程会因为单实例锁立刻退出，若每次都写一大段就会把真正有用的记录冲掉。
+    /// 完整环境信息交给 <see cref="LogEnvironment"/>，只有真正启动成功的那个进程才写。
     /// </summary>
     [ModuleInitializer]
     internal static void Init()
@@ -50,13 +54,21 @@ public static class DiagLog
         try
         {
             ParentDescription = DescribeParent();
-            Write("boot", "=== process created ===");
-            Write("boot", $"session={SessionId} pid={Environment.ProcessId} parent={ParentDescription}");
-            Write("boot", $"exe={Environment.ProcessPath ?? "<null>"}");
+            Write("boot", $"=== process created === pid={Environment.ProcessId} parent={ParentDescription} " +
+                          $"exe={Environment.ProcessPath ?? "<null>"} tickSinceBoot={Environment.TickCount64}ms");
+        }
+        catch { }
+    }
+
+    /// <summary>完整环境信息，由抢到单实例锁的进程调用（每次真正启动只记一次）。</summary>
+    public static void LogEnvironment()
+    {
+        try
+        {
             Write("boot", $"cmdline={Environment.CommandLine}");
-            Write("boot", $"user={Environment.UserName} sessionId={Process.GetCurrentProcess().SessionId} " +
+            Write("boot", $"user={Environment.UserName} winSession={Process.GetCurrentProcess().SessionId} " +
                           $"os={Environment.OSVersion.Version} clr={Environment.Version} " +
-                          $"tickSinceBoot={Environment.TickCount64}ms utcOffset={TimeZoneInfo.Local.GetUtcOffset(DateTime.Now)}");
+                          $"utcOffset={TimeZoneInfo.Local.GetUtcOffset(DateTime.Now)}");
         }
         catch { }
     }

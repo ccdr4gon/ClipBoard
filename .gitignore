@@ -45,3 +45,14 @@ desktop.ini
 
 # Release artifacts (binaries are attached to GitHub Releases, not committed)
 dist/
+
+# Downloaded media tools (installed by scripts/Setup-MediaTools.ps1)
+tools/media/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Machine-local assistant permissions
+.claude/*.local.json

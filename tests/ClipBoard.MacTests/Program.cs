@@ -1,0 +1,180 @@
+using System.Diagnostics;
+using System.IO.Compression;
+using System.Text;
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Headless;
+using Avalonia.Threading;
+using ClipBoard;
+using ClipBoard.Models;
+using ClipBoard.Services;
+using ClipBoard.Views;
+using SkiaSharp;
+
+internal static class Program
+{
+    private static readonly string Root = Path.Combine(Path.GetTempPath(), "ClipBoard-MacTests-" + Guid.NewGuid().ToString("N"));
+    private static readonly string Repo = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../"));
+    private static StickerMediaService Media => new(App.Persistence, OperatingSystem.IsWindows() ? Path.Combine(Repo, "tools/media") : "");
+    private static StickerLibraryService Library => new(App.Favorites, App.Persistence, Media);
+    [STAThread]
+    private static int Main(string[] args)
+    {
+        App.Preview = true; App.ProfileDirectory = Root;
+        var lifetime = new ClassicDesktopStyleApplicationLifetime();
+        AppBuilder.Configure<App>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithLifetime(lifetime);
+        int failures = 0;
+        using var finish = new CancellationTokenSource();
+        Dispatcher.UIThread.Post(async () =>
+        {
+            try
+            {
+                (string Name, Func<Task> Run)[] tests = [
+                    ("历史去重、200 条上限与置顶保留", History),
+                    ("图片原件、缩略图与收藏生命周期", Images),
+                    ("Telegram 导入在原面板新增标签、只更新修改项", Telegram),
+                    ("GIF 预览、编辑与原件恢复", Animation),
+                    ("跨平台数据重载保留贴纸发布信息", Reload),
+                ];
+                foreach (var test in tests)
+                {
+                    try { await test.Run(); Console.WriteLine("PASS " + test.Name); }
+                    catch (Exception ex) { failures++; Console.WriteLine("FAIL " + test.Name + ": " + ex); }
+                }
+                if (args.Contains("--native-smoke"))
+                {
+                    try { NativeSmoke(); Console.WriteLine("PASS macOS 原生剪贴板、热键、钥匙串"); }
+                    catch (Exception ex) { failures++; Console.WriteLine("FAIL 原生接口：" + ex); }
+                }
+                Console.WriteLine($"Failures: {failures}");
+            }
+            finally { App.Persistence.FlushSync(); finish.Cancel(); }
+        });
+        Dispatcher.UIThread.MainLoop(finish.Token);
+        // Root is unique and created exclusively by this test process.
+        try { Directory.Delete(Root, true); } catch { }
+        return failures == 0 ? 0 : 1;
+    }
+    private static void Check(bool condition, string reason) { if (!condition) throw new InvalidOperationException(reason); }
+    private static Task History()
+    {
+        App.History.Capture(new(Text: "重复")); App.History.Capture(new(Text: "重复"));
+        Check(App.History.Items.Count == 1, "相邻文本未去重");
+        App.Favorites.PinHistory(App.History.Items[0], App.History);
+        for (int i = 0; i < 205; i++) App.History.Capture(new(Text: "内容 " + i));
+        Check(App.History.Items.Count == 200 && App.Favorites.PinnedHistory.Count == 1, "历史上限或置顶错误");
+        App.Favorites.UnpinHistory(App.Favorites.PinnedHistory[0], App.History);
+        Check(App.History.Items.Count == 200 && App.History.Items[0].Text == "重复", "取消置顶丢失内容");
+        App.History.Clear(); return Task.CompletedTask;
+    }
+    private static Task Images()
+    {
+        byte[] png = Png(1, 1800, 1000);
+        App.History.Capture(new(Image: png)); App.History.Capture(new(Image: png));
+        var item = App.History.Items[0];
+        Check(App.History.Items.Count == 1 && item.PixelW == 1800 && item.Image!.PixelSize.Width == 512, "缩略图替换了原始尺寸或未去重");
+        var folder = App.Favorites.EnsureDefaultMemeFolder();
+        App.Favorites.AddToFolder(item, folder);
+        var favorite = folder.Items[^1];
+        App.History.Remove(item);
+        using var full = App.Persistence.LoadImageBlob(favorite.ImageBlobName!);
+        Check(full?.PixelSize.Width == 1800, "删除历史损坏收藏原图");
+        App.Favorites.RemoveFavorite(favorite);
+        Check(!File.Exists(App.Persistence.GetBlobPath(favorite.ImageBlobName!)), "收藏移除后文件没有清理");
+        return Task.CompletedTask;
+    }
+    private static async Task Telegram()
+    {
+        using var server = new FakeTelegram(); using var http = new HttpClient(server);
+        using var client = new TelegramStickerClient(FakeTelegram.Token, http);
+        server.Seed("MacTestPack", (Png(2), "static"), (Tgs(), "animated"));
+        var remote = await client.GetSetAsync("MacTestPack", default);
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)App.Current!.ApplicationLifetime!).MainWindow!;
+        using (var icon = Avalonia.Platform.AssetLoader.Open(new Uri("avares://ClipBoard.Mac/Assets/tray.ico")))
+            Check(new Avalonia.Controls.WindowIcon(icon) != null, "菜单栏图标未正确打包");
+        window.Show();
+        int count = App.Favorites.Folders.Count;
+        var result = await Library.ImportTelegramAsync(client, remote, remote.Stickers, null, default, window.SelectFolder);
+        Check(result.Added == 2 && result.Errors.Count == 0, string.Join(";", result.Errors));
+        Check(App.Favorites.Folders.Count == count + 1 && window.VisibleItems.Count == 2, "导入没有选中原面板新标签");
+        var folder = result.Folder;
+        var publisher = new TelegramStickerPublisher(client, Media, Library.Save);
+        await publisher.PublishAsync(await publisher.PrepareAsync(folder, 1234, "", null, default), null, default);
+        string unchanged = folder.Items[1].Sticker!.PublishedFileId!;
+        var item = folder.Items[0];
+        Library.ReplaceLocal(folder, item, await Media.EditAsync(item, new(Caption: "Mac 修改"), default));
+        var again = await Library.ImportTelegramAsync(client, remote, remote.Stickers, null, default);
+        Check(again.Skipped == 2 && folder.Items[0].Sticker!.Revision == 2, "重复导入覆盖本地编辑");
+        await publisher.PublishAsync(await publisher.PrepareAsync(folder, 1234, "", null, default), null, default);
+        Check(server.LastOwner == 1234 && server.Creates == 1 && server.Replaces == 1 && folder.Items[1].Sticker!.PublishedFileId == unchanged, "发布影响了其他贴纸或所有者");
+        window.SelectFolder(folder);
+        await Task.Delay(100);
+        Directory.CreateDirectory(Path.Combine(Repo, "out"));
+        Avalonia.Headless.HeadlessWindowExtensions.CaptureRenderedFrame(window)?.Save(Path.Combine(Repo, "out", "macos-panel-preview.png"));
+        Check(window.Bounds.Width > 0, "界面未布局");
+    }
+    private static async Task Animation()
+    {
+        var path = Path.Combine(Root, "sample.gif");
+        var start = new ProcessStartInfo(Media.Tool("ffmpeg")) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+        foreach (var argument in new[] { "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=96x96:rate=10:duration=1", path }) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start)!;
+        string error = await process.StandardError.ReadToEndAsync(); await process.WaitForExitAsync();
+        Check(process.ExitCode == 0, error);
+        var item = await Media.ImportFileAsync(path);
+        string original = item.Sticker!.OriginalBlobName;
+        var edited = await Media.EditAsync(item, new(Caption: "GIF", DurationSeconds: 1), default);
+        var prepared = await Media.PrepareTelegramAsync(edited, default);
+        var details = await Media.InspectAsync(prepared.Path, StickerFormat.Webm, default);
+        Check(prepared.Format == "video" && details.Duration <= 3 && new FileInfo(prepared.Path).Length <= 256 * 1024, "动画输出不符合规格");
+        var preview = await Media.CreatePreviewAsync(edited, default);
+        using var player = new GifPreview(preview);
+        Check(player.Source != null, "动画首帧没有显示");
+        await Task.Delay(200);
+        var restored = await Media.RestoreAsync(edited, default);
+        Check(restored.Sticker!.Format == StickerFormat.Gif && File.ReadAllBytes(App.Persistence.GetBlobPath(original)).SequenceEqual(File.ReadAllBytes(path)), "恢复原件错误");
+    }
+    private static Task Reload()
+    {
+        App.Favorites.Save(); App.Persistence.FlushSync();
+        var data = new PersistenceService(Root).Load();
+        var folder = data.Folders.Single(f => f.Telegram?.SourceSetName == "MacTestPack");
+        Check(folder.Telegram!.OwnerUserId == 1234 && data.Favorites.Where(i => i.FolderId == folder.Id).All(i => i.Sticker?.PublishedFileId != null), "重载丢失发布关系");
+        var store = new FavoritesStore(App.Persistence, data);
+        Check(store.Folders.Single(f => f.Id == folder.Id).Items.All(i => i.Image != null), "重载丢失缩略图");
+        return Task.CompletedTask;
+    }
+    private static void NativeSmoke()
+    {
+        Check(OperatingSystem.IsMacOS(), "--native-smoke 必须在专用 Mac 测试环境运行");
+        System.Runtime.InteropServices.NativeLibrary.Load("/System/Library/Frameworks/AppKit.framework/AppKit");
+        MacNative.Call(MacNative.Class("NSApplication"), "sharedApplication");
+        Check(MacClipboard.Write(new ClipItem { Kind = ClipKind.Text, Text = "ClipBoard native smoke" }, App.Persistence), "写入失败");
+        Check(MacClipboard.Read()?.Text == "ClipBoard native smoke", "读取失败");
+        App.History.Capture(new(Image: Png(4)));
+        Check(MacClipboard.Write(App.History.Items[0], App.Persistence) && MacClipboard.Read()?.Image is { Length: > 0 }, "原生图片剪贴板失败");
+        var file = Path.Combine(Root, "file with 中文 spaces.txt"); File.WriteAllText(file, "native smoke");
+        Check(MacClipboard.Write(new ClipItem { Kind = ClipKind.Files, FilePaths = [file] }, App.Persistence)
+            && MacClipboard.Read()?.Files?.Single() == file, "原生文件 URL 读写失败");
+        using var hotkey = new MacHotkey(() => { });
+        var store = new TelegramConnectionStore(Root);
+        store.Save(new("123456:local_test_only", 1234));
+        Check(store.Load().Token == "123456:local_test_only" && !File.ReadAllText(Path.Combine(Root, "telegram-connection.json")).Contains("local_test_only"), "钥匙串保存失败");
+        store.Save(new());
+    }
+    private static byte[] Png(int seed, int w = 160, int h = 160)
+    {
+        using var bitmap = new SKBitmap(w, h);
+        using var canvas = new SKCanvas(bitmap); canvas.Clear(SKColors.Transparent);
+        using var paint = new SKPaint { Color = new SKColor((byte)(seed * 40), 150, 120), IsAntialias = true };
+        canvas.DrawCircle(w / 2f, h / 2f, Math.Min(w, h) * .4f, paint);
+        using var data = bitmap.Encode(SKEncodedImageFormat.Png, 100); return data.ToArray();
+    }
+    private static byte[] Tgs()
+    {
+        const string json = """{"v":"5.7.4","fr":30,"ip":0,"op":30,"w":512,"h":512,"nm":"Test","ddd":0,"assets":[],"layers":[{"ddd":0,"ind":1,"ty":1,"nm":"solid","sr":1,"ks":{"o":{"a":0,"k":100},"r":{"a":0,"k":0},"p":{"a":0,"k":[256,256,0]},"a":{"a":0,"k":[128,128,0]},"s":{"a":0,"k":[100,100,100]}},"sw":256,"sh":256,"sc":"#edaa66","ip":0,"op":30,"st":0,"bm":0}]}""";
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.Optimal, true)) gzip.Write(Encoding.UTF8.GetBytes(json));
+        return output.ToArray();
+    }
+}

@@ -33,12 +33,16 @@ public partial class MainWindow : Window
     private readonly List<ClipItem> _deferredPromotions = new();
     private bool _isDraggingOut;
     private ContextMenu? _openContextMenu;
+    private Views.StickerTabActions? _stickerActions;
+    private readonly Dictionary<Guid, (Panel Actions, ListBox List, TextBlock Status, Button Cancel)> _stickerTabViews = new();
+    private string _stickerStatus = "";
 
     public MainWindow()
     {
         InitializeComponent();
         Loaded += (_, _) =>
         {
+            if (_historyTab != null) return;
             BuildTabs();
             SearchBox.PreviewMouseLeftButtonDown += (_, ev) =>
             {
@@ -54,16 +58,12 @@ public partial class MainWindow : Window
             };
         };
         SourceInitialized += OnSourceInitialized;
+        Closed += (_, _) => _stickerActions?.Cancel();
         Activated += (_, _) => Log($"ACTIVATED pinned={_pinned} fg={ForegroundHex()}");
         Deactivated += (_, _) => Log($"DEACTIVATED pinned={_pinned} fg={ForegroundHex()}");
         App.Favorites.Folders.CollectionChanged += OnFoldersChanged;
         App.Favorites.PinnedHistory.CollectionChanged += OnPinnedChanged;
         App.History.Items.CollectionChanged += OnHistoryChanged;
-        _combinedHistory.CollectionChanged += (_, _) =>
-        {
-            RebuildSmartViews();
-            UpdateEntryCount();
-        };
         RebuildCombinedHistory();
         Log("MainWindow constructed");
     }
@@ -89,7 +89,7 @@ public partial class MainWindow : Window
         _emojiView.Clear();
         foreach (var it in _combinedHistory)
         {
-            if (it.Kind == ClipKind.Image) _imageView.Add(it);
+            if (it.Kind is ClipKind.Image or ClipKind.Gif) _imageView.Add(it);
             else if (it.Kind == ClipKind.Text && IsPureEmoji(it.Text)) _emojiView.Add(it);
         }
     }
@@ -265,7 +265,7 @@ public partial class MainWindow : Window
         var defaultMemes = App.Favorites.EnsureDefaultMemeFolder();
         var memeLb = BuildListBox(defaultMemes.Items, isHistoryTab: false, folder: defaultMemes);
         ApplyTileStyle(memeLb, "MemeTileTemplate", "MemeTileStyle");
-        _memeTab = new TabItem { Header = MakeTabHeader("表情包", "MEMES"), Content = memeLb, Tag = defaultMemes };
+        _memeTab = new TabItem { Header = MakeTabHeader("表情包", "MEMES"), Content = BuildMemeContent(defaultMemes, memeLb), Tag = defaultMemes };
         _folderTabs[defaultMemes] = _memeTab;
         Tabs.Items.Add(_memeTab);
 
@@ -301,6 +301,8 @@ public partial class MainWindow : Window
 
     private void OnFoldersChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        // 从启动参数导入时主面板尚未 Loaded，待 BuildTabs 一次性创建，避免重复标签。
+        if (_historyTab == null) return;
         if (e.Action == NotifyCollectionChangedAction.Add && e.NewItems != null)
         {
             foreach (FavoriteFolder f in e.NewItems)
@@ -320,6 +322,7 @@ public partial class MainWindow : Window
                 {
                     Tabs.Items.Remove(ti);
                     _folderTabs.Remove(f);
+                    _stickerTabViews.Remove(f.Id);
                 }
             }
             if (Tabs.SelectedItem == null)
@@ -356,14 +359,109 @@ public partial class MainWindow : Window
         menu.Items.Add(delete);
         header.ContextMenu = menu;
 
-        var ti = new TabItem { Header = header, Tag = folder, Content = BuildListBoxForFolder(folder) };
+        var list = BuildListBoxForFolder(folder);
+        var ti = new TabItem { Header = header, Tag = folder, Content = folder.Kind == FolderKind.Meme ? BuildMemeContent(folder, list) : list };
         _folderTabs[folder] = ti;
         return ti;
     }
 
     private ListBox BuildListBoxForCombined()
     {
-        return BuildListBox(_combinedHistory, isHistoryTab: true, folder: null);
+        var lb = BuildListBox(_combinedHistory, isHistoryTab: true, folder: null);
+        lb.Tag = "History";
+        return lb;
+    }
+
+    private UIElement BuildMemeContent(FavoriteFolder folder, ListBox list)
+    {
+        var panel = new DockPanel();
+        var top = new StackPanel { Margin = new Thickness(10, 0, 10, 8) };
+        var bar = new DockPanel();
+        var actions = new WrapPanel();
+        Button Action(string caption, Func<Task> action)
+        {
+            var button = new Button { Content = caption, Style = (Style)FindResource("StickerActionButtonStyle") };
+            button.Click += async (_, _) => await RunStickerAction(action);
+            actions.Children.Add(button);
+            return button;
+        }
+        Action("＋ 导入文件", () => StickerActions.ImportFilesAsync(folder));
+        Action("导入 Telegram", () => StickerActions.ImportTelegramAsync());
+        Action("导出", () => StickerActions.ExportAsync(folder));
+        Action("发布 / 更新", () => StickerActions.PublishAsync(folder));
+        var more = new Button { Content = "更多 ···", Style = (Style)FindResource("StickerActionButtonStyle"), ContextMenu = new ContextMenu() };
+        void More(string text, Func<Task> action)
+        {
+            var item = new MenuItem { Header = text };
+            item.Click += async (_, _) => await RunStickerAction(action);
+            more.ContextMenu.Items.Add(item);
+        }
+        More("选择部分 Telegram 贴纸导入…", () => StickerActions.ImportSelectedAsync());
+        More("打开 Telegram 包", () => StickerActions.OpenRemoteAsync(folder));
+        More("连接设置…", () => StickerActions.ConfigureAsync());
+        more.Click += (_, _) => { more.ContextMenu.PlacementTarget = more; more.ContextMenu.IsOpen = true; };
+        actions.Children.Add(more);
+        var cancel = new Button { Content = "取消", Visibility = Visibility.Collapsed, Style = (Style)FindResource("StickerActionButtonStyle") };
+        cancel.Click += (_, _) => _stickerActions?.Cancel();
+        DockPanel.SetDock(cancel, Dock.Right); bar.Children.Add(cancel); bar.Children.Add(actions);
+        top.Children.Add(bar);
+        var status = new TextBlock { FontSize = 11, Foreground = (Brush)FindResource("Muted"), Margin = new Thickness(8, 3, 0, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis, Visibility = Visibility.Collapsed };
+        top.Children.Add(status);
+        DockPanel.SetDock(top, Dock.Top); panel.Children.Add(top); panel.Children.Add(list);
+        _stickerTabViews[folder.Id] = (actions, list, status, cancel);
+        ((INotifyCollectionChanged)list.Items).CollectionChanged += (_, _) => { UpdateEntryCount(); UpdateTitleCounter(); };
+        if (_stickerStatus.Length > 0) SetStickerStatus(_stickerStatus);
+        if (_stickerActions?.IsBusy == true) SetStickerBusy(true);
+        return panel;
+    }
+
+    private Views.StickerTabActions StickerActions
+    {
+        get
+        {
+            if (_stickerActions == null)
+            {
+                _stickerActions = new Views.StickerTabActions(this, App.Favorites, App.Persistence, SelectStickerFolder);
+                _stickerActions.StatusChanged += SetStickerStatus;
+                _stickerActions.BusyChanged += SetStickerBusy;
+            }
+            return _stickerActions;
+        }
+    }
+    private void SelectStickerFolder(FavoriteFolder folder)
+    {
+        if (_folderTabs.TryGetValue(folder, out var tab)) Tabs.SelectedItem = tab;
+        UpdateEntryCount(); UpdateTitleCounter();
+    }
+    private void SetStickerStatus(string text)
+    {
+        _stickerStatus = text;
+        foreach (var view in _stickerTabViews.Values)
+        { view.Status.Text = text; view.Status.ToolTip = text; view.Status.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible; }
+    }
+    private void SetStickerBusy(bool busy)
+    {
+        foreach (var view in _stickerTabViews.Values)
+        { view.Actions.IsEnabled = view.List.IsEnabled = !busy; view.Cancel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed; }
+        UpdateEntryCount(); UpdateTitleCounter();
+    }
+    private async Task RunStickerAction(Func<Task> action)
+    {
+        if (_stickerActions?.IsBusy == true) return;
+        bool previous = _suppressDeactivate;
+        _suppressDeactivate = true;
+        try { await action(); }
+        catch (Exception ex) { SetStickerStatus(ex.Message); }
+        finally { _suppressDeactivate = previous; UpdateEntryCount(); UpdateTitleCounter(); }
+    }
+
+    public async Task OpenStickerTabAsync(string? importLink = null)
+    {
+        ShowPanel();
+        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+        SelectStickerFolder(App.Favorites.EnsureDefaultMemeFolder());
+        if (importLink != null) await RunStickerAction(() => StickerActions.ImportLinkAsync(importLink));
     }
 
     private ListBox BuildListBoxForFolder(FavoriteFolder folder)
@@ -429,6 +527,7 @@ public partial class MainWindow : Window
         lb.ContextMenu = new ContextMenu();
         lb.ContextMenuOpening += (s, ev) =>
         {
+            if (_stickerActions?.IsBusy == true) { ev.Handled = true; return; }
             if (lb.SelectedItem is not ClipItem item) { ev.Handled = true; return; }
             var menu = lb.ContextMenu;
             menu.Items.Clear();
@@ -489,7 +588,7 @@ public partial class MainWindow : Window
             menu.Items.Add(pinMi);
 
             var favMi = new MenuItem { Header = "收藏到" };
-            bool isImageOrGif = item.Kind == ClipKind.Image || item.Kind == ClipKind.Gif;
+            bool isImageOrGif = item.Kind is ClipKind.Image or ClipKind.Gif or ClipKind.VideoSticker or ClipKind.VectorSticker;
             foreach (var f in App.Favorites.Folders)
             {
                 if (f.Kind == FolderKind.Meme && !isImageOrGif) continue;
@@ -521,16 +620,15 @@ public partial class MainWindow : Window
 
             del.Click += (_, _) =>
             {
-                if (item.IsPinned) App.Favorites.PinnedHistory.Remove(item);
+                if (item.IsPinned) App.Favorites.RemovePinnedHistory(item);
                 else App.History.Remove(item);
-                if (item.IsPinned) App.Favorites.Save();
             };
             menu.Items.Add(del);
         }
         else
         {
             var moveMi = new MenuItem { Header = "移动到" };
-            bool isImageOrGif = item.Kind == ClipKind.Image || item.Kind == ClipKind.Gif;
+            bool isImageOrGif = item.Kind is ClipKind.Image or ClipKind.Gif or ClipKind.VideoSticker or ClipKind.VectorSticker;
             foreach (var f in App.Favorites.Folders)
             {
                 if (f == currentFolder) continue;
@@ -547,6 +645,21 @@ public partial class MainWindow : Window
 
             if (currentFolder?.Kind == FolderKind.Meme)
             {
+                void AddStickerAction(string title, Func<Task> action)
+                {
+                    var option = new MenuItem { Header = title };
+                    option.Click += async (_, _) => await RunStickerAction(action);
+                    menu.Items.Add(option);
+                }
+                AddStickerAction("编辑图片 / 动图…", () => StickerActions.EditAsync(currentFolder, item));
+                if (item.Kind is ClipKind.Gif or ClipKind.VideoSticker or ClipKind.VectorSticker)
+                    AddStickerAction("播放动画预览…", () => StickerActions.PreviewAsync(item));
+                AddStickerAction("替换素材文件…", () => StickerActions.ReplaceAsync(currentFolder, item));
+                AddStickerAction("恢复原件", () => StickerActions.RestoreAsync(currentFolder, item));
+                AddStickerAction("关联 emoji…", () => StickerActions.EmojiAsync(item));
+                AddStickerAction("上移", () => StickerActions.MoveAsync(currentFolder, item, -1));
+                AddStickerAction("下移", () => StickerActions.MoveAsync(currentFolder, item, 1));
+                menu.Items.Add(new Separator());
                 var titleMi = new MenuItem { Header = "设置标题…" };
                 titleMi.Click += (_, _) => EditMemeTitle(item);
                 menu.Items.Add(titleMi);
@@ -560,7 +673,11 @@ public partial class MainWindow : Window
             }
 
             var remove = new MenuItem { Header = "从收藏夹移除" };
-            remove.Click += (_, _) => App.Favorites.RemoveFavorite(item);
+            remove.Click += async (_, _) =>
+            {
+                if (currentFolder?.Kind == FolderKind.Meme) await RunStickerAction(() => StickerActions.RemoveAsync(item));
+                else App.Favorites.RemoveFavorite(item);
+            };
             menu.Items.Add(remove);
         }
     }
@@ -580,6 +697,9 @@ public partial class MainWindow : Window
         _combinedHistory.Clear();
         foreach (var p in App.Favorites.PinnedHistory) _combinedHistory.Add(p);
         foreach (var i in App.History.Items) _combinedHistory.Add(i);
+        RebuildSmartViews();
+        UpdateEntryCount();
+        UpdateTitleCounter();
     }
 
     private void OnPinnedChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -605,7 +725,11 @@ public partial class MainWindow : Window
         {
         _lastPasteUtc = DateTime.UtcNow;
         Log($"PasteSelected kind={item.Kind} pinned={_pinned} textLen={item.Text?.Length ?? 0}");
-        App.History.CopyToClipboard(item);
+        if (!App.History.CopyToClipboard(item))
+        {
+            Log("PasteSelected cancelled: clipboard write failed or item unavailable");
+            return;
+        }
 
         if (_pinned)
         {
@@ -615,7 +739,11 @@ public partial class MainWindow : Window
         else
         {
             int pinIdx = App.Favorites.PinnedHistory.IndexOf(item);
-            if (pinIdx > 0) App.Favorites.PinnedHistory.Move(pinIdx, 0);
+            if (pinIdx > 0)
+            {
+                App.Favorites.PinnedHistory.Move(pinIdx, 0);
+                App.Favorites.Save();
+            }
             else App.History.PromoteToTop(item);
         }
 
@@ -625,16 +753,22 @@ public partial class MainWindow : Window
             {
                 var target = _preClickForeground;
                 var fg = GetForegroundWindow();
-                var myHwnd = new WindowInteropHelper(this).Handle;
                 if (fg != target) SetForegroundWindow(target);
-                SendPasteKeystroke();
+                if (GetForegroundWindow() == target) SendPasteKeystroke();
                 Log($"Pinned paste: target={target.ToInt64():X} was_fg={(fg==target)} kind={item.Kind}");
             }
             return;
         }
 
         HidePanel();
-        Dispatcher.BeginInvoke(new Action(SendPasteKeystroke), System.Windows.Threading.DispatcherPriority.Background);
+        var pasteTarget = _foregroundBeforeShow;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (pasteTarget != IntPtr.Zero && GetForegroundWindow() != pasteTarget)
+                SetForegroundWindow(pasteTarget);
+            if (pasteTarget != IntPtr.Zero && GetForegroundWindow() == pasteTarget)
+                SendPasteKeystroke();
+        }), System.Windows.Threading.DispatcherPriority.Background);
         }
         catch (Exception ex) { Log("PasteSelected FAILED: " + ex.Message); }
     }
@@ -667,6 +801,7 @@ public partial class MainWindow : Window
             var prevFg = GetForegroundWindow();
             var myHwnd = new WindowInteropHelper(this).Handle;
             if (prevFg != IntPtr.Zero && prevFg != myHwnd) _foregroundBeforeShow = prevFg;
+            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             Show();
             Topmost = false;
             Topmost = true;
@@ -743,7 +878,11 @@ public partial class MainWindow : Window
         foreach (var item in _deferredPromotions)
         {
             int pinIdx = App.Favorites.PinnedHistory.IndexOf(item);
-            if (pinIdx > 0) App.Favorites.PinnedHistory.Move(pinIdx, 0);
+            if (pinIdx > 0)
+            {
+                App.Favorites.PinnedHistory.Move(pinIdx, 0);
+                App.Favorites.Save();
+            }
             else App.History.PromoteToTop(item);
         }
         _deferredPromotions.Clear();
@@ -809,7 +948,17 @@ public partial class MainWindow : Window
     private void OnCloseClick(object sender, RoutedEventArgs e)
     {
         if (_pinned) { _pinned = false; PinButton.Opacity = 0.4; }
+        PinButton.ToolTip = "固定窗口（不自动隐藏）";
+        SetNoActivateStyle(false);
         HidePanel();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        // Alt+F4 与关闭按钮都只隐藏面板，保留剪贴板监听和热键依赖的窗口句柄。
+        e.Cancel = true;
+        OnCloseClick(this, new RoutedEventArgs());
+        base.OnClosing(e);
     }
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e)
@@ -942,12 +1091,21 @@ public partial class MainWindow : Window
                 if (dragImg != null) data.SetData(DataFormats.Bitmap, dragImg);
                 break;
             case ClipKind.Gif:
-                if (item.GifBytes is { Length: > 0 })
+                var gifBytes = item.GifBytes ?? (item.GifBlobName is { } gifName ? App.Persistence.LoadGifBlob(gifName) : null);
+                if (gifBytes is { Length: > 0 })
                 {
-                    var path = Services.HistoryStore.WriteGifTemp(item.GifBytes);
+                    var path = Services.HistoryStore.WriteGifTemp(gifBytes);
                     var sc = new StringCollection();
                     sc.Add(path);
                     data.SetFileDropList(sc);
+                }
+                break;
+            case ClipKind.VideoSticker:
+            case ClipKind.VectorSticker:
+                if (item.Sticker is { } asset)
+                {
+                    var files = new StringCollection { App.Persistence.GetBlobPath(asset.WorkingBlobName) };
+                    data.SetFileDropList(files);
                 }
                 break;
             default: return;
@@ -962,7 +1120,11 @@ public partial class MainWindow : Window
             if (effects != DragDropEffects.None)
             {
                 int pinIdx = App.Favorites.PinnedHistory.IndexOf(item);
-                if (pinIdx > 0) App.Favorites.PinnedHistory.Move(pinIdx, 0);
+                if (pinIdx > 0)
+                {
+                    App.Favorites.PinnedHistory.Move(pinIdx, 0);
+                    App.Favorites.Save();
+                }
                 else App.History.PromoteToTop(item);
                 if (!_pinned) HidePanel();
             }
@@ -999,6 +1161,7 @@ public partial class MainWindow : Window
     private ListBox? GetActiveListBox()
     {
         if (Tabs.SelectedItem is TabItem ti && ti.Content is ListBox lb) return lb;
+        if (Tabs.SelectedItem is TabItem { Content: Panel panel }) return panel.Children.OfType<ListBox>().FirstOrDefault();
         return null;
     }
 
@@ -1028,6 +1191,7 @@ public partial class MainWindow : Window
                 };
             };
         }
+        UpdateEntryCount();
     }
 
     private void OnTabSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1051,6 +1215,7 @@ public partial class MainWindow : Window
 
     private void RenameFolder(FavoriteFolder folder)
     {
+        if (_stickerActions?.IsBusy == true) return;
         var dlg = new FolderNameDialog("重命名收藏夹", folder.Name, showKindPicker: false) { Owner = this };
         if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
             App.Favorites.RenameFolder(folder, dlg.FolderName.Trim());
@@ -1058,6 +1223,7 @@ public partial class MainWindow : Window
 
     private void DeleteFolder(FavoriteFolder folder)
     {
+        if (_stickerActions?.IsBusy == true) return;
         var r = MessageBox.Show(this,
             $"删除收藏夹\"{folder.Name}\"？其中 {folder.Items.Count} 条收藏将一并删除，无法恢复。",
             "确认删除", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
@@ -1085,10 +1251,11 @@ public partial class MainWindow : Window
         base.OnPreviewDragLeave(e);
         DropOverlay.Opacity = 0;
     }
-    protected override void OnPreviewDrop(DragEventArgs e)
+    protected override async void OnPreviewDrop(DragEventArgs e)
     {
         base.OnPreviewDrop(e);
         DropOverlay.Opacity = 0;
+        if (_stickerActions?.IsBusy == true) { e.Handled = true; return; }
         if (_isDraggingOut) { e.Handled = true; return; }
         Log($"PreviewDrop formats={string.Join(",", e.Data.GetFormats())}");
         var target = GetCurrentDropTarget();
@@ -1100,32 +1267,9 @@ public partial class MainWindow : Window
             {
                 if (targetIsMeme)
                 {
-                    var imgExts = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
-                    foreach (var f in files)
-                    {
-                        if (!imgExts.Any(ext => f.EndsWith(ext, StringComparison.OrdinalIgnoreCase))) continue;
-                        try
-                        {
-                            if (f.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
-                            {
-                                var bytes = System.IO.File.ReadAllBytes(f);
-                                var item = new ClipItem { Kind = ClipKind.Gif, GifBytes = bytes };
-                                App.Favorites.AddToFolder(item, target!);
-                            }
-                            else
-                            {
-                                var bi = new BitmapImage();
-                                bi.BeginInit();
-                                bi.CacheOption = BitmapCacheOption.OnLoad;
-                                bi.UriSource = new Uri(f);
-                                bi.EndInit();
-                                bi.Freeze();
-                                var item = new ClipItem { Kind = ClipKind.Image, Image = bi };
-                                App.Favorites.AddToFolder(item, target!);
-                            }
-                        }
-                        catch { }
-                    }
+                    e.Handled = true;
+                    await RunStickerAction(() => StickerActions.ImportFilesAsync(target!, files));
+                    return;
                 }
                 else
                 {
@@ -1170,6 +1314,11 @@ public partial class MainWindow : Window
 
     private void AddItem(FavoriteFolder? target, ClipKind kind, string? text = null, BitmapSource? image = null, string[]? files = null)
     {
+        if (target?.Kind == FolderKind.Meme && kind == ClipKind.Files && files != null)
+        {
+            _ = RunStickerAction(() => StickerActions.ImportFilesAsync(target, files));
+            return;
+        }
         if (target == null)
         {
             switch (kind)

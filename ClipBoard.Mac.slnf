@@ -1,0 +1,6 @@
+{
+  "solution": {
+    "path": "ClipBoard.sln",
+    "projects": ["src\\ClipBoard.Mac\\ClipBoard.Mac.csproj"]
+  }
+}

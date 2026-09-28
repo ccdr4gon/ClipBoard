@@ -2,7 +2,7 @@
 
 # 📋 ClipBoard
 
-**一个精致的 Windows 托盘剪贴板管理器**
+**Windows 托盘 / macOS 菜单栏剪贴板管理器**
 
 文本 · 图片 · GIF · 文件 历史 ｜ 收藏夹 ｜ 表情包 ｜ Emoji ｜ 全局热键
 
@@ -41,6 +41,20 @@
 
 ## 📦 安装
 
+### macOS（新增，待实机验收）
+
+提供 Apple Silicon 和 Intel 两种构建，要求 macOS 13+。保留标签页和卡片布局，支持历史缩略图、收藏、Telegram 贴纸导入、GIF 编辑和发布更新。
+
+在 [v1.1.0 预发布版](https://github.com/ccdr4gon/ClipBoard/releases/tag/v1.1.0) 下载 `ClipBoard-1.1.0-macos-arm64.zip`（M 系列）或 `ClipBoard-1.1.0-macos-x64.zip`（Intel）。
+
+```sh
+python3 scripts/package-macos.py --arch arm64  # M 系列 Mac
+python3 scripts/package-macos.py --arch x64    # Intel Mac
+```
+
+应用输出到 `dist/macos-对应架构/`；动画处理需 `brew install ffmpeg`。
+快捷键为 `⌘⌥V`。安装、权限、签名、数据迁移和功能范围见 [macOS 使用说明](docs/macos.md)。
+
 ### 下载（推荐）
 
 前往 [**Releases**](https://github.com/ccdr4gon/ClipBoard/releases/latest) 下载 `ClipBoard-vX.Y.Z-win-x64.exe`。
@@ -64,6 +78,11 @@ dotnet publish src/ClipBoard/ClipBoard.csproj -c Release -r win-x64 `
   --self-contained true -p:PublishSingleFile=true `
   -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
 ```
+
+## Telegram 表情包管理
+
+“表情包”页内直接支持导入 Telegram 整包，导入后新增一个标签页并沿用原卡片样式。支持 GIF/WebM/TGS、保留原件、右键裁剪加字、动画截取，以及发布到自己的 Telegram 账号后按项更新。
+首次构建请运行 `./scripts/Setup-MediaTools.ps1` 安装媒体组件。机器人配置、使用方式和验证命令见 [Telegram 表情包管理说明](docs/telegram-stickers.md)。
 
 ## ⚙️ 设置
 

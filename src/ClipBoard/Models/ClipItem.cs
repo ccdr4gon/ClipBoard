@@ -1,11 +1,16 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
+#if AVALONIA
+using BitmapSource = Avalonia.Media.Imaging.Bitmap;
+using BitmapImage = Avalonia.Media.Imaging.Bitmap;
+#else
 using System.Windows.Media.Imaging;
+#endif
 
 namespace ClipBoard.Models;
 
-public enum ClipKind { Text, Image, Files, Gif }
+public enum ClipKind { Text, Image, Files, Gif, VideoSticker, VectorSticker }
 
 public class ClipItem : INotifyPropertyChanged
 {
@@ -15,13 +20,14 @@ public class ClipItem : INotifyPropertyChanged
     public string? ImageBlobName { get; set; }
     public string? GifBlobName { get; set; }
     public string[]? FilePaths { get; set; }
+    public StickerAsset? Sticker { get; set; }
     public DateTime Timestamp { get; set; } = DateTime.Now;
 
     // 原始图片像素尺寸（持久化）。内存中的 Image 只是缩略图，故尺寸标签用这两个值。
     public int PixelW { get; set; }
     public int PixelH { get; set; }
 
-    // 去重用的首行+尺寸签名（仅内存，比较最近一条是否同图）。
+    // 完整像素的签名（仅内存，结合尺寸比较最近一条是否同图）。
     [JsonIgnore]
     public long ImageSig { get; set; }
 
@@ -83,16 +89,36 @@ public class ClipItem : INotifyPropertyChanged
         {
             if (_gifBytes == null || _gifBytes.Length == 0) return null;
             if (_gifSourceCache != null) return _gifSourceCache;
+#if AVALONIA
+            using var stream = new System.IO.MemoryStream(_gifBytes);
+            var bi = new BitmapImage(stream);
+#else
             var bi = new BitmapImage();
             bi.BeginInit();
             bi.CacheOption = BitmapCacheOption.OnLoad;
             bi.StreamSource = new System.IO.MemoryStream(_gifBytes);
             bi.EndInit();
             bi.Freeze();
+#endif
             _gifSourceCache = bi;
             return bi;
         }
     }
+
+    [JsonIgnore]
+    private int ImageWidth =>
+#if AVALONIA
+        Image?.PixelSize.Width ?? 0;
+#else
+        Image?.PixelWidth ?? 0;
+#endif
+    [JsonIgnore]
+    private int ImageHeight =>
+#if AVALONIA
+        Image?.PixelSize.Height ?? 0;
+#else
+        Image?.PixelHeight ?? 0;
+#endif
 
     [JsonIgnore]
     public string Preview
@@ -107,8 +133,10 @@ public class ClipItem : INotifyPropertyChanged
                     : FilePaths.Length == 1
                         ? System.IO.Path.GetFileName(FilePaths[0])
                         : $"{FilePaths.Length} 个文件：{System.IO.Path.GetFileName(FilePaths[0])} …",
-                ClipKind.Image => $"图片 ({(PixelW > 0 ? PixelW : Image?.PixelWidth ?? 0)}×{(PixelH > 0 ? PixelH : Image?.PixelHeight ?? 0)})",
-                ClipKind.Gif => $"GIF ({((_gifBytes?.Length ?? 0) / 1024)} KB)",
+                ClipKind.Image => $"图片 ({(PixelW > 0 ? PixelW : ImageWidth)}×{(PixelH > 0 ? PixelH : ImageHeight)})",
+                ClipKind.Gif => Sticker != null ? $"GIF ({Sticker.DurationSeconds:0.##} 秒)" : $"GIF ({((_gifBytes?.Length ?? 0) / 1024)} KB)",
+                ClipKind.VideoSticker => "视频贴纸 · WEBM",
+                ClipKind.VectorSticker => "动画贴纸 · TGS",
                 _ => ""
             };
         }
@@ -120,18 +148,28 @@ public class ClipItem : INotifyPropertyChanged
     [JsonIgnore]
     public string DimensionLabel => Kind switch
     {
-        ClipKind.Image => $"{(PixelW > 0 ? PixelW : Image?.PixelWidth ?? 0)}×{(PixelH > 0 ? PixelH : Image?.PixelHeight ?? 0)} · PNG",
-        ClipKind.Gif => $"GIF · {((_gifBytes?.Length ?? 0) / 1024)} KB",
+        ClipKind.Image => $"{(PixelW > 0 ? PixelW : ImageWidth)}×{(PixelH > 0 ? PixelH : ImageHeight)} · PNG",
+        ClipKind.Gif => Sticker != null ? $"GIF · {Sticker.DurationSeconds:0.##} 秒" : $"GIF · {((_gifBytes?.Length ?? 0) / 1024)} KB",
+        ClipKind.VideoSticker => $"{PixelW}×{PixelH} · WEBM",
+        ClipKind.VectorSticker => "512×512 · TGS",
         _ => ""
     };
 
+#if AVALONIA
+    [JsonIgnore] public bool TextVisibility => Kind == ClipKind.Text;
+    [JsonIgnore] public bool ImageVisibility => Kind is ClipKind.Image or ClipKind.VideoSticker or ClipKind.VectorSticker;
+    [JsonIgnore] public bool GifVisibility => Kind == ClipKind.Gif;
+    [JsonIgnore] public bool FilesVisibility => Kind == ClipKind.Files;
+    [JsonIgnore] public bool PinVisibility => IsPinned;
+#else
     [JsonIgnore]
     public System.Windows.Visibility TextVisibility =>
         Kind == ClipKind.Text ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
 
     [JsonIgnore]
     public System.Windows.Visibility ImageVisibility =>
-        Kind == ClipKind.Image ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+        Kind is ClipKind.Image or ClipKind.VideoSticker or ClipKind.VectorSticker
+            ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
 
     [JsonIgnore]
     public System.Windows.Visibility GifVisibility =>
@@ -144,8 +182,22 @@ public class ClipItem : INotifyPropertyChanged
     [JsonIgnore]
     public System.Windows.Visibility PinVisibility =>
         IsPinned ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+#endif
 
     public event PropertyChangedEventHandler? PropertyChanged;
+    [JsonIgnore]
+    public string StickerStatus => Sticker?.PublishedFileId == null ? "未发布"
+        : Sticker.Revision == Sticker.PublishedRevision ? "已同步" : "待更新";
+    [JsonIgnore]
+    public string StickerEmojiLabel => string.Join(" ", Sticker?.Emojis ?? []);
+
+    public void NotifyMediaChanged()
+    {
+        foreach (var property in new[] { nameof(Kind), nameof(Image), nameof(GifSource), nameof(Preview),
+            nameof(DimensionLabel), nameof(TextVisibility), nameof(ImageVisibility), nameof(GifVisibility),
+            nameof(FilesVisibility), nameof(Sticker), nameof(StickerStatus), nameof(StickerEmojiLabel) })
+            OnChanged(property);
+    }
     private void OnChanged([CallerMemberName] string? name = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -161,6 +213,7 @@ public class ClipItem : INotifyPropertyChanged
         ImageBlobName = ImageBlobName,
         GifBlobName = GifBlobName,
         FilePaths = FilePaths?.ToArray(),
+        Sticker = Sticker?.Clone(),
         Timestamp = Timestamp,
         IsPinned = IsPinned,
         FolderId = FolderId,

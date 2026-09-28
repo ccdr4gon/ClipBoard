@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>ClipBoard.Mac</AssemblyName>
+    <RootNamespace>ClipBoard</RootNamespace>
+    <DefineConstants>$(DefineConstants);AVALONIA</DefineConstants>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.19" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.19" />
+    <PackageReference Include="SkiaSharp" Version="2.88.9" />
+    <PackageReference Include="SkiaSharp.Skottie" Version="2.88.9" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="2.88.9" />
+    <AvaloniaResource Include="../ClipBoard/Assets/tray.ico" Link="Assets/tray.ico" />
+    <Compile Include="../ClipBoard/Models/*.cs" Link="Models/%(Filename)%(Extension)" />
+    <Compile Include="../ClipBoard/Services/AppSettings.cs;../ClipBoard/Services/FavoritesStore.cs;../ClipBoard/Services/PersistenceService.cs;../ClipBoard/Services/Sticker*.cs;../ClipBoard/Services/Telegram*.cs" Link="Services/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

@@ -30,12 +30,17 @@ public class ClipboardMonitor : IDisposable
     private HwndSource? _source;
     private IntPtr _hwnd;
     private bool _disposed;
+    private readonly Func<uint, bool>? _ignoreSequence;
+    private readonly CancellationTokenSource _shutdown = new();
+    private Task _pendingChanges = Task.CompletedTask;
+    private readonly List<ClipboardChangedEventArgs> _queuedChanges = new();
 
     public event EventHandler<ClipboardChangedEventArgs>? ClipboardChanged;
 
-    public ClipboardMonitor(Window window)
+    public ClipboardMonitor(Window window, Func<uint, bool>? ignoreSequence = null)
     {
         _window = window;
+        _ignoreSequence = ignoreSequence;
         new WindowInteropHelper(window).EnsureHandle();
         Attach();
     }
@@ -60,30 +65,24 @@ public class ClipboardMonitor : IDisposable
 
     private void ReadClipboardWithRetry(int attempt)
     {
+        if (_disposed) return;
         try
         {
+            // 在读取时识别自身写入；按时间忽略会漏掉用户紧接着复制的新内容。
+            if (_ignoreSequence?.Invoke(HistoryStore.GetClipboardSequenceNumber()) == true) return;
             if (Clipboard.ContainsImage())
             {
-                if (GifHelper.TryReadGifFromClipboard(out var gifBytes) && gifBytes != null)
-                {
-                    ClipboardChanged?.Invoke(this, new ClipboardChangedEventArgs
-                    {
-                        Kind = ClipKind.Gif,
-                        GifBytes = gifBytes,
-                    });
-                    return;
-                }
-
+                var gifUrl = GifHelper.ReadGifUrlFromClipboard();
                 var img = Clipboard.GetImage();
                 if (img != null)
                 {
                     img = FixAlphaChannel(img);
                     img.Freeze();
-                    ClipboardChanged?.Invoke(this, new ClipboardChangedEventArgs
+                    QueueChange(new ClipboardChangedEventArgs
                     {
                         Kind = ClipKind.Image,
                         Image = img,
-                    });
+                    }, gifUrl);
                     return;
                 }
             }
@@ -92,7 +91,7 @@ public class ClipboardMonitor : IDisposable
                 StringCollection sc = Clipboard.GetFileDropList();
                 var arr = new string[sc.Count];
                 sc.CopyTo(arr, 0);
-                ClipboardChanged?.Invoke(this, new ClipboardChangedEventArgs
+                QueueChange(new ClipboardChangedEventArgs
                 {
                     Kind = ClipKind.Files,
                     Files = arr,
@@ -102,7 +101,7 @@ public class ClipboardMonitor : IDisposable
             if (Clipboard.ContainsText())
             {
                 string text = Clipboard.GetText();
-                ClipboardChanged?.Invoke(this, new ClipboardChangedEventArgs
+                QueueChange(new ClipboardChangedEventArgs
                 {
                     Kind = ClipKind.Text,
                     Text = text,
@@ -117,6 +116,38 @@ public class ClipboardMonitor : IDisposable
         catch (Exception)
         {
             // Swallow: next update will try again.
+        }
+    }
+
+    private void QueueChange(ClipboardChangedEventArgs change, string? gifUrl = null)
+    {
+        _queuedChanges.Add(change);
+        _pendingChanges = DeliverChangeAsync(_pendingChanges, change, gifUrl);
+    }
+
+    private async Task DeliverChangeAsync(Task previous, ClipboardChangedEventArgs change, string? gifUrl)
+    {
+        try
+        {
+            var captured = change;
+            // 网络读取不占用窗口线程；按捕获顺序交付，慢 GIF 不会覆盖更晚的历史顺序。
+            var download = gifUrl == null ? Task.FromResult<byte[]?>(null)
+                : GifHelper.DownloadGifAsync(gifUrl, _shutdown.Token);
+            await previous;
+            var bytes = await download;
+            if (_disposed) return;
+            if (bytes != null)
+                change = new ClipboardChangedEventArgs { Kind = ClipKind.Gif, GifBytes = bytes };
+            await _window.Dispatcher.InvokeAsync(() =>
+            {
+                if (_disposed) return;
+                _queuedChanges.Remove(captured);
+                ClipboardChanged?.Invoke(this, change);
+            });
+        }
+        catch (Exception)
+        {
+            // 单次读取失败不阻断后续剪贴板事件。
         }
     }
 
@@ -151,8 +182,17 @@ public class ClipboardMonitor : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _shutdown.Cancel();
+        _shutdown.Dispose();
         if (_hwnd != IntPtr.Zero)
             RemoveClipboardFormatListener(_hwnd);
         _source?.RemoveHook(WndProc);
+        // 退出时保存已捕获的内容；尚未下完的 GIF 使用捕获时的静态图回退。
+        foreach (var change in _queuedChanges)
+        {
+            try { ClipboardChanged?.Invoke(this, change); }
+            catch (Exception) { /* 单个条目保存失败不阻止其他条目及退出刷新。 */ }
+        }
+        _queuedChanges.Clear();
     }
 }

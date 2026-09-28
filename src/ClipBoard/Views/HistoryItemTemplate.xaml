@@ -19,6 +19,32 @@
     <SolidColorBrush x:Key="AccentSoft" Color="#1F7A4F2B"/>
     <SolidColorBrush x:Key="PaperStrong" Color="#FDFAF3" Opacity="0.96"/>
 
+    <Style x:Key="StickerActionButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="Margin" Value="0,0,5,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="ButtonSurface" Property="Background" Value="{StaticResource AccentSoft}"/>
+                            <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- ── History row (ListBoxItem) ── -->
     <Style x:Key="ClipListItemStyle" TargetType="{x:Type ListBoxItem}">
         <Setter Property="Padding" Value="12,9"/>
@@ -72,15 +98,24 @@
                            v:InvisibleTextBlock.Source="{Binding Text}"
                            v:InvisibleTextBlock.ShowInvisible="{Binding ShowInvisibleChars, Source={x:Static app:App.Settings}}"/>
 
-                <!-- Image items: text description instead of thumbnail -->
-                <TextBlock Visibility="{Binding ImageVisibility}"
-                           FontFamily="{StaticResource Serif}" FontSize="13"
-                           FontStyle="Italic" Foreground="{StaticResource Muted}"
-                           VerticalAlignment="Center">
-                    <Run Text="— image,"/>
-                    <Run Text="{Binding DimensionLabel, Mode=OneWay}"/>
-                    <Run Text="—"/>
-                </TextBlock>
+                <!-- 列表图片直接显示预览，不依赖外部列表标记。仅在预览中裁切，原图不变。 -->
+                    <DockPanel x:Name="HistoryImagePreview" Visibility="{Binding ImageVisibility}">
+                        <Border DockPanel.Dock="Left" Width="184" Height="107"
+                                Margin="0,0,12,0" Padding="3" CornerRadius="4"
+                                Background="{StaticResource PaperStrong}"
+                                BorderBrush="{StaticResource Divider}" BorderThickness="1">
+                            <Border.ToolTip>
+                                <Image Source="{Binding Image}" MaxWidth="400" MaxHeight="400" Stretch="Uniform"/>
+                            </Border.ToolTip>
+                            <v:HistoryThumbnail x:Name="HistoryImageViewport" Source="{Binding Image}"
+                                                Width="176" Height="99"
+                                                RenderOptions.BitmapScalingMode="HighQuality"/>
+                        </Border>
+                        <TextBlock Text="{Binding DimensionLabel}"
+                                   FontFamily="{StaticResource Mono}" FontSize="11"
+                                   Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
 
                 <!-- GIF items -->
                 <TextBlock Visibility="{Binding GifVisibility}"
@@ -206,10 +241,10 @@
                 <Border.ToolTip>
                     <ToolTip Placement="Right" HorizontalOffset="10"
                              Background="White" BorderBrush="#AAA" BorderThickness="1" Padding="6">
-                        <Grid>
-                            <Image Source="{Binding Image}" Visibility="{Binding ImageVisibility}" MaxWidth="400" MaxHeight="400" Stretch="Uniform"/>
-                            <Image gif:ImageBehavior.AnimatedSource="{Binding GifSource}" Visibility="{Binding GifVisibility}" MaxWidth="400" MaxHeight="400" Stretch="Uniform"/>
-                        </Grid>
+                        <StackPanel>
+                            <Image Source="{Binding Image}" MaxWidth="400" MaxHeight="400" Stretch="Uniform"/>
+                            <TextBlock Text="{Binding StickerStatus}" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/>
+                        </StackPanel>
                     </ToolTip>
                 </Border.ToolTip>
                 <DockPanel LastChildFill="True">
@@ -219,10 +254,8 @@
                                Foreground="{StaticResource Ink}"
                                TextTrimming="CharacterEllipsis" MaxWidth="185"/>
                     <Grid ClipToBounds="True">
-                        <Image Source="{Binding Image}" Visibility="{Binding ImageVisibility}"
-                               Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        <Image gif:ImageBehavior.AnimatedSource="{Binding GifSource}" Visibility="{Binding GifVisibility}"
-                               Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <Image Source="{Binding Image}"
+                               Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Grid>
                 </DockPanel>
             </Border>

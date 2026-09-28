@@ -1,6 +1,11 @@
 using System.IO;
 using System.Text.Json;
+#if AVALONIA
+using BitmapSource = Avalonia.Media.Imaging.Bitmap;
+using BitmapImage = Avalonia.Media.Imaging.Bitmap;
+#else
 using System.Windows.Media.Imaging;
+#endif
 using ClipBoard.Models;
 
 namespace ClipBoard.Services;
@@ -20,15 +25,25 @@ public class PersistenceService
     private readonly object _lock = new();
     private PersistedData? _pendingSnapshot;
 
-    public PersistenceService()
+    public PersistenceService(string? rootDirectory = null)
     {
-        _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard");
+        _root = rootDirectory ?? (OperatingSystem.IsMacOS()
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support", "ClipBoard")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard"));
         _dataFile = Path.Combine(_root, "data.json");
         _blobsDir = Path.Combine(_root, "blobs");
         Directory.CreateDirectory(_blobsDir);
     }
 
     public string BlobsDir => _blobsDir;
+    public string RootDirectory => _root;
+
+    public string GetBlobPath(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || Path.GetFileName(name) != name)
+            throw new ArgumentException("无效的素材文件名。", nameof(name));
+        return Path.Combine(_blobsDir, name);
+    }
 
     public PersistedData Load()
     {
@@ -37,7 +52,17 @@ public class PersistenceService
             if (!File.Exists(_dataFile)) return new PersistedData();
             var json = File.ReadAllText(_dataFile);
             if (string.IsNullOrWhiteSpace(json)) return new PersistedData();
-            return JsonSerializer.Deserialize<PersistedData>(json, _jsonOpts) ?? new PersistedData();
+            var data = JsonSerializer.Deserialize<PersistedData>(json, _jsonOpts) ?? new PersistedData();
+            // 旧版保存时遗漏了原图尺寸，从文件头补回，避免把缩略图尺寸当成原图尺寸。
+            foreach (var item in data.History.Concat(data.PinnedHistory).Concat(data.Favorites))
+            {
+                if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName)
+                    && (item.PixelW <= 0 || item.PixelH <= 0))
+                {
+                    (item.PixelW, item.PixelH) = ReadImageSize(item.ImageBlobName);
+                }
+            }
+            return data;
         }
         catch
         {
@@ -62,25 +87,24 @@ public class PersistenceService
 
     private void WritePending()
     {
-        PersistedData? snap;
+        // 取快照和写文件必须共用同一把锁；FlushSync 也要等正在写的快照落盘。
         lock (_lock)
         {
-            snap = _pendingSnapshot;
-            _pendingSnapshot = null;
             _debounce?.Dispose();
             _debounce = null;
-        }
-        if (snap is null) return;
-        try
-        {
-            var tmp = _dataFile + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(snap, _jsonOpts));
-            if (File.Exists(_dataFile)) File.Replace(tmp, _dataFile, null);
-            else File.Move(tmp, _dataFile);
-        }
-        catch
-        {
-            // Ignore persistence errors to avoid killing the app.
+            if (_pendingSnapshot is null) return;
+            try
+            {
+                var tmp = _dataFile + ".tmp";
+                File.WriteAllText(tmp, JsonSerializer.Serialize(_pendingSnapshot, _jsonOpts));
+                if (File.Exists(_dataFile)) File.Replace(tmp, _dataFile, null);
+                else File.Move(tmp, _dataFile);
+                _pendingSnapshot = null;
+            }
+            catch
+            {
+                // 保留待保存快照，下一次保存或退出刷新时仍可重试。
+            }
         }
     }
 
@@ -89,9 +113,13 @@ public class PersistenceService
         var name = Guid.NewGuid().ToString("N") + ".png";
         var full = Path.Combine(_blobsDir, name);
         using var fs = new FileStream(full, FileMode.Create, FileAccess.Write);
+#if AVALONIA
+        image.Save(fs);
+#else
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(image));
         encoder.Save(fs);
+#endif
         return name;
     }
 
@@ -101,6 +129,10 @@ public class PersistenceService
         {
             var full = Path.Combine(_blobsDir, name);
             if (!File.Exists(full)) return null;
+#if AVALONIA
+            using var stream = File.OpenRead(full);
+            return new BitmapImage(stream);
+#else
             var bi = new BitmapImage();
             bi.BeginInit();
             bi.CacheOption = BitmapCacheOption.OnLoad;
@@ -108,6 +140,7 @@ public class PersistenceService
             bi.EndInit();
             bi.Freeze();
             return bi;
+#endif
         }
         catch
         {
@@ -131,14 +164,12 @@ public class PersistenceService
             var uri = new Uri(full);
 
             // 先只读文件头拿到原始尺寸，决定按宽还是按高限制（保证最长边 ≤ maxSide）。
-            int ow = 0, oh = 0;
-            try
-            {
-                var dec = BitmapDecoder.Create(uri, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
-                if (dec.Frames.Count > 0) { ow = dec.Frames[0].PixelWidth; oh = dec.Frames[0].PixelHeight; }
-            }
-            catch { }
-
+            var (ow, oh) = ReadImageSize(name);
+#if AVALONIA
+            using var stream = File.OpenRead(full);
+            return ow >= oh && ow > maxSide ? BitmapImage.DecodeToWidth(stream, maxSide)
+                : oh > maxSide ? BitmapImage.DecodeToHeight(stream, maxSide) : new BitmapImage(stream);
+#else
             var bi = new BitmapImage();
             bi.BeginInit();
             bi.CacheOption = BitmapCacheOption.OnLoad;
@@ -148,11 +179,29 @@ public class PersistenceService
             bi.EndInit();
             bi.Freeze();
             return bi;
+#endif
         }
         catch
         {
             return null;
         }
+    }
+
+    private (int Width, int Height) ReadImageSize(string name)
+    {
+        try
+        {
+            // 明确关闭文件流；用 Uri + CacheOption.None 创建解码器会把文件锁留给 GC。
+            using var stream = File.OpenRead(Path.Combine(_blobsDir, name));
+#if AVALONIA
+            using var codec = SkiaSharp.SKCodec.Create(stream);
+            return codec == null ? (0, 0) : (codec.Info.Width, codec.Info.Height);
+#else
+            var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+            return (decoder.Frames[0].PixelWidth, decoder.Frames[0].PixelHeight);
+#endif
+        }
+        catch { return (0, 0); }
     }
 
     public void DeleteImageBlob(string name)

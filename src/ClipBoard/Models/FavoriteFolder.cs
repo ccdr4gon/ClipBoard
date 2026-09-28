@@ -20,6 +20,7 @@ public class FavoriteFolder : INotifyPropertyChanged
     public int Order { get; set; }
 
     public FolderKind Kind { get; set; } = FolderKind.Normal;
+    public TelegramPackBinding? Telegram { get; set; }
 
     [JsonIgnore]
     public System.Collections.ObjectModel.ObservableCollection<ClipItem> Items { get; }

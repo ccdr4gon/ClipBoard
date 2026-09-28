@@ -4,6 +4,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClipBoard", "src\ClipBoard\ClipBoard.csproj", "{9E1D5B68-4A3C-4E7A-9A8D-7B2F1C3E5A01}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClipBoard.Mac", "src\ClipBoard.Mac\ClipBoard.Mac.csproj", "{916B799A-CF14-4696-ADC4-3526EA97DF2E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -14,6 +16,10 @@ Global
 		{9E1D5B68-4A3C-4E7A-9A8D-7B2F1C3E5A01}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9E1D5B68-4A3C-4E7A-9A8D-7B2F1C3E5A01}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9E1D5B68-4A3C-4E7A-9A8D-7B2F1C3E5A01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{916B799A-CF14-4696-ADC4-3526EA97DF2E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{916B799A-CF14-4696-ADC4-3526EA97DF2E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{916B799A-CF14-4696-ADC4-3526EA97DF2E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{916B799A-CF14-4696-ADC4-3526EA97DF2E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

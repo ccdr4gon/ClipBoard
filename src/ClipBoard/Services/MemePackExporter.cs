@@ -8,7 +8,7 @@ namespace ClipBoard.Services;
 public enum ExportPreset
 {
     WeChat,   // 240 PNG
-    Telegram, // 512 PNG
+    Telegram, // Static PNG/WebP, video WebM, animated TGS
     QQ,       // 240 PNG
     WhatsApp, // 512 WEBP, <=100KB
     Raw,      // original pixels, PNG
@@ -18,11 +18,23 @@ public static class MemePackExporter
 {
     public static int Export(FavoriteFolder folder, ExportPreset preset, string outputDir, PersistenceService persistence)
     {
+        if (preset == ExportPreset.Telegram)
+            return Task.Run(() => ExportTelegramAsync(folder, outputDir, persistence, CancellationToken.None)).GetAwaiter().GetResult();
         Directory.CreateDirectory(outputDir);
         int count = 0;
         int idx = 1;
         foreach (var item in folder.Items)
         {
+            if (preset == ExportPreset.Raw && item.Kind is ClipKind.Gif or ClipKind.VideoSticker or ClipKind.VectorSticker)
+            {
+                string? blob = item.Sticker?.WorkingBlobName ?? item.GifBlobName;
+                if (blob != null && File.Exists(persistence.GetBlobPath(blob)))
+                {
+                    File.Copy(persistence.GetBlobPath(blob), Path.Combine(outputDir, $"{idx++:D3}" + Path.GetExtension(blob)), overwrite: true);
+                    count++;
+                }
+                continue;
+            }
             if (item.Kind != ClipKind.Image) continue;
             // 优先用磁盘上的全分辨率原图导出；内存里的 item.Image 只是缩略图，仅作回退。
             BitmapSource? src = !string.IsNullOrEmpty(item.ImageBlobName)
@@ -54,6 +66,22 @@ public static class MemePackExporter
             catch { }
         }
         return count;
+    }
+
+    public static async Task<int> ExportTelegramAsync(FavoriteFolder folder, string outputDir, PersistenceService persistence, CancellationToken ct)
+    {
+        string tools = "";
+        try { tools = new TelegramConnectionStore(persistence.RootDirectory).Load().MediaToolsDirectory; } catch { }
+        var media = new StickerMediaService(persistence, tools);
+        var prepared = new List<PreparedSticker>();
+        foreach (var item in folder.Items.ToArray()) prepared.Add(await media.PrepareTelegramAsync(item, ct));
+        Directory.CreateDirectory(outputDir);
+        for (int i = 0; i < prepared.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            File.Copy(prepared[i].Path, Path.Combine(outputDir, $"{i + 1:D3}" + Path.GetExtension(prepared[i].Path)), overwrite: true);
+        }
+        return prepared.Count;
     }
 
     private static BitmapSource Resize(BitmapSource src, int maxSide)

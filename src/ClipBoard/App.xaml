@@ -16,6 +16,7 @@
                  导致「ClipBoard — Ctrl+Alt+V」贴条无故出现且永不消失。没有 tooltip 对象就没有这个问题。 -->
             <tb:TaskbarIcon x:Key="TrayIcon"
                             IconSource="/Assets/tray.ico"
+                            PreviewTrayContextMenuOpen="Tray_PreviewContextMenuOpen"
                             TrayMouseDoubleClick="Tray_ShowPanel">
                 <tb:TaskbarIcon.ContextMenu>
                     <ContextMenu>

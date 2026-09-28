@@ -19,7 +19,7 @@ public class ExportMemeDialog : Window
         _folder = folder;
         _persistence = persistence;
         Title = $"导出表情包 — {folder.Name}";
-        Width = 480; Height = 240;
+        Width = 480; MinHeight = 280; SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ResizeMode = ResizeMode.NoResize;
 
@@ -28,10 +28,10 @@ public class ExportMemeDialog : Window
         root.Children.Add(new TextBlock { Text = "选择平台预设：", Margin = new Thickness(0, 0, 0, 4) });
         _presetBox = new ComboBox { Padding = new Thickness(4) };
         _presetBox.Items.Add(new ComboBoxItem { Content = "微信 — 240×240 PNG", Tag = ExportPreset.WeChat });
-        _presetBox.Items.Add(new ComboBoxItem { Content = "Telegram — 512×512 PNG", Tag = ExportPreset.Telegram });
+        _presetBox.Items.Add(new ComboBoxItem { Content = "Telegram — PNG / WebM / TGS", Tag = ExportPreset.Telegram });
         _presetBox.Items.Add(new ComboBoxItem { Content = "QQ — 240×240 PNG", Tag = ExportPreset.QQ });
         _presetBox.Items.Add(new ComboBoxItem { Content = "WhatsApp — 512×512 WEBP ≤100KB", Tag = ExportPreset.WhatsApp });
-        _presetBox.Items.Add(new ComboBoxItem { Content = "原始图片 — PNG", Tag = ExportPreset.Raw });
+        _presetBox.Items.Add(new ComboBoxItem { Content = "当前素材 — PNG / GIF / WebM / TGS", Tag = ExportPreset.Raw });
         _presetBox.SelectedIndex = 0;
         root.Children.Add(_presetBox);
 
@@ -48,7 +48,7 @@ public class ExportMemeDialog : Window
         dirPanel.Children.Add(browseBtn);
         root.Children.Add(dirPanel);
 
-        _statusLabel = new TextBlock { Margin = new Thickness(0, 12, 0, 0), Foreground = System.Windows.Media.Brushes.Gray, FontSize = 11 };
+        _statusLabel = new TextBlock { Margin = new Thickness(0, 12, 0, 0), Foreground = System.Windows.Media.Brushes.Gray, FontSize = 11, TextWrapping = TextWrapping.Wrap };
         root.Children.Add(_statusLabel);
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0) };
@@ -69,7 +69,7 @@ public class ExportMemeDialog : Window
             _dirBox.Text = dlg.FolderName;
     }
 
-    private void OnExport(object sender, RoutedEventArgs e)
+    private async void OnExport(object sender, RoutedEventArgs e)
     {
         if (string.IsNullOrWhiteSpace(_dirBox.Text) || !Directory.Exists(_dirBox.Text))
         {
@@ -81,19 +81,21 @@ public class ExportMemeDialog : Window
 
         _statusLabel.Foreground = System.Windows.Media.Brushes.Gray;
         _statusLabel.Text = "导出中…";
-        Dispatcher.InvokeAsync(() =>
+        var button = (Button)sender;
+        button.IsEnabled = false;
+        try
         {
-            try
-            {
-                int n = MemePackExporter.Export(_folder, preset, _dirBox.Text, _persistence);
-                _statusLabel.Foreground = System.Windows.Media.Brushes.DarkGreen;
-                _statusLabel.Text = $"已导出 {n} 张到 {_dirBox.Text}";
-            }
-            catch (Exception ex)
-            {
-                _statusLabel.Foreground = System.Windows.Media.Brushes.Red;
-                _statusLabel.Text = "导出失败：" + ex.Message;
-            }
-        }, System.Windows.Threading.DispatcherPriority.Background);
+            int n = preset == ExportPreset.Telegram
+                ? await MemePackExporter.ExportTelegramAsync(_folder, _dirBox.Text, _persistence, CancellationToken.None)
+                : MemePackExporter.Export(_folder, preset, _dirBox.Text, _persistence);
+            _statusLabel.Foreground = System.Windows.Media.Brushes.DarkGreen;
+            _statusLabel.Text = $"已导出 {n} 张到 {_dirBox.Text}";
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Foreground = System.Windows.Media.Brushes.Red;
+            _statusLabel.Text = "导出失败：" + ex.Message;
+        }
+        finally { button.IsEnabled = true; }
     }
 }

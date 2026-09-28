@@ -1,5 +1,9 @@
 using System.Collections.ObjectModel;
+#if AVALONIA
+using BitmapSource = Avalonia.Media.Imaging.Bitmap;
+#else
 using System.Windows.Media.Imaging;
+#endif
 using ClipBoard.Models;
 
 namespace ClipBoard.Services;
@@ -30,7 +34,7 @@ public class FavoritesStore
     {
         _persistence = persistence;
 
-        foreach (var item in data.PinnedHistory.OrderByDescending(i => i.Timestamp))
+        foreach (var item in data.PinnedHistory)
         {
             RehydrateImage(item);
             PinnedHistory.Add(item);
@@ -49,6 +53,11 @@ public class FavoritesStore
 
     private void RehydrateImage(ClipItem item)
     {
+        if (item.Sticker != null && !string.IsNullOrEmpty(item.ImageBlobName))
+        {
+            item.Image = _persistence.LoadImageThumbnail(item.ImageBlobName);
+            return;
+        }
         if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
         {
             item.Image = _persistence.LoadImageThumbnail(item.ImageBlobName); // 只载入缩略图
@@ -56,43 +65,24 @@ public class FavoritesStore
         else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
         {
             item.GifBytes = _persistence.LoadGifBlob(item.GifBlobName);
+            try { item.Image = item.GifSource; } catch { }
         }
     }
 
     public void PinHistory(ClipItem src, HistoryStore history)
     {
-        // history.Remove(src) 会删除 src 的图片 blob，所以要先把全分辨率原图取出来，
-        // 再为顶置项保存一份独立 blob（修复了以前“顶置后重启图片丢失”的隐患）。
-        BitmapSource? fullRes = null;
-        if (src.Kind == ClipKind.Image)
-            fullRes = !string.IsNullOrEmpty(src.ImageBlobName) ? _persistence.LoadImageBlob(src.ImageBlobName) : src.Image;
-
-        history.Remove(src);
         var clone = src.Clone();
         clone.IsPinned = true;
         clone.Timestamp = DateTime.Now;
-        if (clone.Kind == ClipKind.Image)
-        {
-            clone.ImageBlobName = null;
-            if (fullRes != null)
-            {
-                clone.ImageBlobName = _persistence.SaveImageBlob(fullRes);
-                clone.PixelW = fullRes.PixelWidth;
-                clone.PixelH = fullRes.PixelHeight;
-                clone.Image = _persistence.LoadImageThumbnail(clone.ImageBlobName);
-            }
-        }
-        else if (clone.Kind == ClipKind.Gif && clone.GifBytes is { Length: > 0 } && string.IsNullOrEmpty(clone.GifBlobName))
-        {
-            clone.GifBlobName = _persistence.SaveGifBlob(clone.GifBytes);
-        }
+        // 和取消顶置一样转移文件，无需删除并重写原图或 GIF。
+        if (!history.Detach(src)) return;
         PinnedHistory.Insert(0, clone);
         Save();
     }
 
     public void UnpinHistory(ClipItem pinned, HistoryStore history)
     {
-        PinnedHistory.Remove(pinned);
+        if (!PinnedHistory.Remove(pinned)) return;
 
         // 把 blob 所有权转移给恢复后的历史项（不删除），保留全分辨率；
         // 之后该历史项被淘汰时再由 HistoryStore 统一清理 blob。
@@ -126,14 +116,9 @@ public class FavoritesStore
     public void DeleteFolder(FavoriteFolder f)
     {
         if (f.Id == DefaultMemeFolderId) return;
+        if (!Folders.Remove(f)) return;
         foreach (var item in f.Items)
-        {
-            if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
-                _persistence.DeleteImageBlob(item.ImageBlobName);
-            else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
-                _persistence.DeleteGifBlob(item.GifBlobName);
-        }
-        Folders.Remove(f);
+            DeleteUnusedBlob(item);
         for (int i = 0; i < Folders.Count; i++) Folders[i].Order = i;
         Save();
     }
@@ -142,6 +127,7 @@ public class FavoritesStore
     {
         var clone = src.Clone();
         clone.FolderId = folder.Id;
+        clone.Sticker?.ClearPublication();
         if (clone.Kind == ClipKind.Image)
         {
             // 取源的全分辨率原图，为收藏项保存独立 blob（与历史项解耦：历史被淘汰不影响收藏）。
@@ -149,22 +135,36 @@ public class FavoritesStore
                 ? _persistence.LoadImageBlob(src.ImageBlobName) : src.Image;
             if (fullRes != null)
             {
-                var toSave = folder.Kind == FolderKind.Meme ? Downscale(fullRes, 960) : fullRes;
+                var toSave = fullRes;
                 clone.ImageBlobName = _persistence.SaveImageBlob(toSave);
+#if AVALONIA
+                clone.PixelW = toSave.PixelSize.Width;
+                clone.PixelH = toSave.PixelSize.Height;
+#else
                 clone.PixelW = toSave.PixelWidth;
                 clone.PixelH = toSave.PixelHeight;
+#endif
                 clone.Image = _persistence.LoadImageThumbnail(clone.ImageBlobName);
+#if AVALONIA
+                if (!ReferenceEquals(fullRes, src.Image)) fullRes.Dispose();
+#endif
             }
         }
-        else if (clone.Kind == ClipKind.Gif && clone.GifBytes is { Length: > 0 }
-                 && string.IsNullOrEmpty(clone.GifBlobName))
+        else if (clone.Kind == ClipKind.Gif)
         {
-            clone.GifBlobName = _persistence.SaveGifBlob(clone.GifBytes);
+            var bytes = src.GifBytes ?? (src.GifBlobName is { Length: > 0 } name ? _persistence.LoadGifBlob(name) : null);
+            if (bytes is { Length: > 0 })
+            {
+                clone.GifBytes = bytes;
+                clone.GifBlobName = _persistence.SaveGifBlob(bytes);
+                try { clone.Image = clone.GifSource; } catch { }
+            }
         }
         folder.Items.Insert(0, clone);
         Save();
     }
 
+#if !AVALONIA
     public static System.Windows.Media.Imaging.BitmapSource Downscale(System.Windows.Media.Imaging.BitmapSource src, int maxSide)
     {
         int w = src.PixelWidth, h = src.PixelHeight;
@@ -175,21 +175,48 @@ public class FavoritesStore
         t.Freeze();
         return t;
     }
+#endif
 
     public void RemoveFavorite(ClipItem item)
     {
         var folder = Folders.FirstOrDefault(f => f.Id == item.FolderId);
-        folder?.Items.Remove(item);
-        if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
-            _persistence.DeleteImageBlob(item.ImageBlobName);
-        else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
-            _persistence.DeleteGifBlob(item.GifBlobName);
+        if (folder?.Items.Remove(item) != true) return;
+        if (item.Sticker?.PublishedFileId is { } published && folder.Telegram != null)
+            folder.Telegram.DeletedFileIds.Add(published);
+        if (item.Sticker?.PendingFileId is { } pending && folder.Telegram != null)
+            folder.Telegram.DeletedFileIds.Add(pending);
+        DeleteUnusedBlob(item);
         Save();
+    }
+
+    public void RemovePinnedHistory(ClipItem item)
+    {
+        if (!PinnedHistory.Remove(item)) return;
+        DeleteUnusedBlob(item);
+        Save();
+    }
+
+    internal void DeleteUnusedBlob(ClipItem item)
+    {
+        var remaining = PinnedHistory.Concat(Folders.SelectMany(f => f.Items))
+            .Concat(_history?.Items ?? Enumerable.Empty<ClipItem>()).ToArray();
+        // 包括原件和修改版；原件仍被其他收藏引用时不可清理。
+        foreach (var name in new[] { item.ImageBlobName, item.GifBlobName, item.Sticker?.OriginalBlobName, item.Sticker?.WorkingBlobName }
+                     .Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!remaining.Any(i => new[] { i.ImageBlobName, i.GifBlobName, i.Sticker?.OriginalBlobName, i.Sticker?.WorkingBlobName }
+                    .Contains(name, StringComparer.OrdinalIgnoreCase)))
+                _persistence.DeleteImageBlob(name!);
+        }
     }
 
     public void MoveFavorite(ClipItem item, FavoriteFolder target)
     {
         var src = Folders.FirstOrDefault(f => f.Id == item.FolderId);
+        if (src == target) return;
+        if (item.Sticker?.PublishedFileId is { } published && src?.Telegram != null)
+            src.Telegram.DeletedFileIds.Add(published);
+        item.Sticker?.ClearPublication();
         src?.Items.Remove(item);
         item.FolderId = target.Id;
         target.Items.Insert(0, item);
@@ -200,11 +227,15 @@ public class FavoritesStore
     {
         var data = new PersistedData
         {
-            Folders = Folders.Select(f => new FavoriteFolder { Id = f.Id, Name = f.Name, Order = f.Order, Kind = f.Kind }).ToList(),
+            Folders = Folders.Select(f => new FavoriteFolder { Id = f.Id, Name = f.Name, Order = f.Order, Kind = f.Kind, Telegram = f.Telegram?.Clone() }).ToList(),
             PinnedHistory = PinnedHistory.Select(StripImage).ToList(),
             Favorites = Folders.SelectMany(f => f.Items.Select(i => { var c = StripImage(i); c.FolderId = f.Id; return c; })).ToList(),
             History = _history?.Items.Select(StripImage).ToList() ?? new(),
-            Settings = App.Settings,
+            Settings = new AppSettings
+            {
+                StartWithWindows = App.Settings.StartWithWindows,
+                ShowInvisibleChars = App.Settings.ShowInvisibleChars,
+            },
         };
         _persistence.SaveDebounced(data);
     }
@@ -221,5 +252,8 @@ public class FavoritesStore
         IsPinned = src.IsPinned,
         FolderId = src.FolderId,
         Title = src.Title,
+        PixelW = src.PixelW,
+        PixelH = src.PixelH,
+        Sticker = src.Sticker?.Clone(),
     };
 }

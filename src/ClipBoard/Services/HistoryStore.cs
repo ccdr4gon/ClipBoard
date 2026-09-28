@@ -14,9 +14,13 @@ public class HistoryStore
 
     public ObservableCollection<ClipItem> Items { get; } = new();
 
-    private DateTime _selfUpdateUntilUtc = DateTime.MinValue;
-    public bool IsSelfUpdate => DateTime.UtcNow < _selfUpdateUntilUtc;
-    public void ClearSelfUpdate() { /* time-window based, no-op */ }
+    private uint? _selfUpdateSequence;
+    private bool _isWritingClipboard;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern uint GetClipboardSequenceNumber();
+
+    public bool IsSelfUpdate(uint sequence) => _isWritingClipboard || _selfUpdateSequence == sequence;
 
     public HistoryStore(FavoritesStore favorites) { _favorites = favorites; }
 
@@ -35,9 +39,9 @@ public class HistoryStore
     {
         int w = image.PixelWidth, h = image.PixelHeight;
         long sig = ComputeImageSig(image);
-        // 去重：与最近一条比较原始尺寸 + 首行签名（内存里的 Image 现在是缩略图，故不能直接比像素）。
+        // 去重比较完整像素；只看首行会漏掉顶部相同、正文不同的截图。
         if (Items.Count > 0 && Items[0].Kind == ClipKind.Image
-            && Items[0].PixelW == w && Items[0].PixelH == h && Items[0].ImageSig == sig) return;
+            && sig != 0 && Items[0].PixelW == w && Items[0].PixelH == h && Items[0].ImageSig == sig) return;
 
         var item = new ClipItem { Kind = ClipKind.Image, PixelW = w, PixelH = h, ImageSig = sig };
         if (_persistence != null)
@@ -53,22 +57,25 @@ public class HistoryStore
         InsertNew(item);
     }
 
-    // 由全分辨率位图算出去重签名（首行像素 + 尺寸的 FNV-1a 哈希）。
+    // 统一像素格式后逐块读取全部像素，内存只需一小块缓冲区。
     private static long ComputeImageSig(BitmapSource img)
     {
         try
         {
-            int stride = img.PixelWidth * (img.Format.BitsPerPixel + 7) / 8;
-            var buf = new byte[stride];
-            img.CopyPixels(new System.Windows.Int32Rect(0, 0, img.PixelWidth, 1), buf, stride, 0);
-            unchecked
+            if (img.Format != System.Windows.Media.PixelFormats.Bgra32)
+                img = new FormatConvertedBitmap(img, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+            int stride = checked(img.PixelWidth * 4);
+            int rowsPerBlock = Math.Min(img.PixelHeight, Math.Max(1, 65536 / stride));
+            var buf = new byte[checked(stride * rowsPerBlock)];
+            using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+                System.Security.Cryptography.HashAlgorithmName.SHA256);
+            for (int y = 0; y < img.PixelHeight; y += rowsPerBlock)
             {
-                long hsh = 1469598103934665603L;
-                hsh = (hsh ^ img.PixelWidth) * 1099511628211L;
-                hsh = (hsh ^ img.PixelHeight) * 1099511628211L;
-                foreach (var b in buf) hsh = (hsh ^ b) * 1099511628211L;
-                return hsh;
+                int rows = Math.Min(rowsPerBlock, img.PixelHeight - y);
+                img.CopyPixels(new Int32Rect(0, y, img.PixelWidth, rows), buf, stride, 0);
+                hash.AppendData(buf, 0, stride * rows);
             }
+            return System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(hash.GetHashAndReset());
         }
         catch { return 0; }
     }
@@ -86,7 +93,7 @@ public class HistoryStore
     {
         if (gifBytes.Length == 0) return;
         if (Items.Count > 0 && Items[0].Kind == ClipKind.Gif && Items[0].GifBytes != null
-            && Items[0].GifBytes!.Length == gifBytes.Length) return;
+            && Items[0].GifBytes!.AsSpan().SequenceEqual(gifBytes)) return;
         var item = new ClipItem { Kind = ClipKind.Gif, GifBytes = gifBytes };
         if (_persistence != null)
             item.GifBlobName = _persistence.SaveGifBlob(gifBytes);
@@ -127,29 +134,38 @@ public class HistoryStore
 
     public void Remove(ClipItem item)
     {
-        Items.Remove(item);
+        if (!Items.Remove(item)) return;
         CleanupBlob(item);
         TriggerSave();
     }
 
+    // 顶置只转移条目，不删除它仍需使用的图片文件，也不保存中间状态。
+    internal bool Detach(ClipItem item) => Items.Remove(item);
+
     private void CleanupBlob(ClipItem item)
     {
-        if (_persistence == null) return;
-        if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
-            _persistence.DeleteImageBlob(item.ImageBlobName);
-        else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
-            _persistence.DeleteGifBlob(item.GifBlobName);
+        _favorites.DeleteUnusedBlob(item);
     }
 
     public void PromoteToTop(ClipItem item)
     {
         int idx = Items.IndexOf(item);
-        if (idx > 0) Items.Move(idx, 0);
+        if (idx > 0)
+        {
+            Items.Move(idx, 0);
+            TriggerSave();
+        }
     }
 
-    public void CopyToClipboard(ClipItem item)
+    public bool CopyToClipboard(ClipItem item)
     {
-        _selfUpdateUntilUtc = DateTime.UtcNow.AddMilliseconds(600);
+        _isWritingClipboard = true;
+        try { return TryCopyToClipboard(item); }
+        finally { _isWritingClipboard = false; }
+    }
+
+    private bool TryCopyToClipboard(ClipItem item)
+    {
         for (int attempt = 0; attempt < 5; attempt++)
         {
             try
@@ -157,25 +173,36 @@ public class HistoryStore
                 switch (item.Kind)
                 {
                     case ClipKind.Text:
-                        if (item.Text != null) Clipboard.SetDataObject(item.Text, false);
+                        if (item.Text == null) return false;
+                        Clipboard.SetDataObject(item.Text, true);
                         break;
                     case ClipKind.Image:
                         // 复制要保真：优先从磁盘读全分辨率原图，缩略图仅作回退。
                         var full = (_persistence != null && !string.IsNullOrEmpty(item.ImageBlobName))
                             ? _persistence.LoadImageBlob(item.ImageBlobName) : null;
                         var toCopy = full ?? item.Image;
-                        if (toCopy != null) Clipboard.SetImage(toCopy);
+                        if (toCopy == null) return false;
+                        Clipboard.SetImage(toCopy);
                         break;
                     case ClipKind.Gif:
-                        if (item.GifBytes is { Length: > 0 })
+                        var gifBytes = item.GifBytes ?? (_persistence != null && item.GifBlobName is { } gifName ? _persistence.LoadGifBlob(gifName) : null);
+                        if (gifBytes is { Length: > 0 })
                         {
-                            var tempPath = WriteGifTemp(item.GifBytes);
+                            var tempPath = WriteGifTemp(gifBytes);
                             var sc = new StringCollection();
                             sc.Add(tempPath);
                             var data = new DataObject();
                             data.SetFileDropList(sc);
-                            Clipboard.SetDataObject(data, false);
+                            Clipboard.SetDataObject(data, true);
                         }
+                        else return false;
+                        break;
+                    case ClipKind.VideoSticker:
+                    case ClipKind.VectorSticker:
+                        if (_persistence == null || item.Sticker == null) return false;
+                        var assetPath = _persistence.GetBlobPath(item.Sticker.WorkingBlobName);
+                        if (!System.IO.File.Exists(assetPath)) return false;
+                        Clipboard.SetFileDropList(new StringCollection { assetPath });
                         break;
                     case ClipKind.Files:
                         if (item.FilePaths is { Length: > 0 })
@@ -184,17 +211,21 @@ public class HistoryStore
                             sc.AddRange(item.FilePaths);
                             var data = new DataObject();
                             data.SetFileDropList(sc);
-                            Clipboard.SetDataObject(data, false);
+                            Clipboard.SetDataObject(data, true);
                         }
+                        else return false;
                         break;
+                    default: return false;
                 }
-                return;
+                _selfUpdateSequence = GetClipboardSequenceNumber();
+                return true;
             }
             catch
             {
                 System.Threading.Thread.Sleep(30);
             }
         }
+        return false;
     }
 
 }

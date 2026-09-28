@@ -9,20 +9,15 @@ public static class GifHelper
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
     private const long MaxBytes = 10 * 1024 * 1024;
 
-    public static bool TryReadGifFromClipboard(out byte[]? gif)
+    public static string? ReadGifUrlFromClipboard()
     {
-        gif = null;
         try
         {
-            if (!Clipboard.ContainsData(DataFormats.Html)) return false;
+            if (!Clipboard.ContainsData(DataFormats.Html)) return null;
             var html = Clipboard.GetData(DataFormats.Html) as string;
-            if (string.IsNullOrEmpty(html)) return false;
-            var url = ExtractGifUrl(html);
-            if (url == null) return false;
-            gif = DownloadGif(url);
-            return gif != null;
+            return string.IsNullOrEmpty(html) ? null : ExtractGifUrl(html);
         }
-        catch { return false; }
+        catch { return null; }
     }
 
     public static string? ExtractGifUrl(string html)
@@ -33,18 +28,21 @@ public static class GifHelper
         return m2.Success ? m2.Groups[1].Value : null;
     }
 
-    public static byte[]? DownloadGif(string url)
+    public static async Task<byte[]?> DownloadGifAsync(string url, CancellationToken cancellationToken = default)
     {
         try
         {
-            using var resp = _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            var token = timeout.Token;
+            using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return null;
             if (resp.Content.Headers.ContentLength is long len && len > MaxBytes) return null;
             using var ms = new System.IO.MemoryStream();
-            using var s = resp.Content.ReadAsStream();
+            using var s = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
             byte[] buf = new byte[8192];
             int total = 0, n;
-            while ((n = s.Read(buf, 0, buf.Length)) > 0)
+            while ((n = await s.ReadAsync(buf.AsMemory(), token).ConfigureAwait(false)) > 0)
             {
                 total += n;
                 if (total > MaxBytes) return null;
@@ -52,7 +50,8 @@ public static class GifHelper
             }
             var bytes = ms.ToArray();
             if (bytes.Length < 6) return null;
-            if (bytes[0] != 'G' || bytes[1] != 'I' || bytes[2] != 'F') return null;
+            if (!bytes.AsSpan(0, 6).SequenceEqual("GIF87a"u8)
+                && !bytes.AsSpan(0, 6).SequenceEqual("GIF89a"u8)) return null;
             return bytes;
         }
         catch { return null; }
