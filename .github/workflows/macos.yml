@@ -19,6 +19,10 @@ jobs:
         run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
       - name: Test shared features and native macOS adapters
         run: dotnet run --project tests/ClipBoard.MacTests -- --native-smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipBoard-macOS-previews
+          path: out/macos-*-preview.png
       - name: Package Apple Silicon
         run: python3 scripts/package-macos.py --arch arm64
       - name: Package Intel

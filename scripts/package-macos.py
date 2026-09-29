@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", choices=["arm64", "x64"], default="arm64")
-    parser.add_argument("--version", default="1.1.0")
+    parser.add_argument("--version", default="1.1.1")
     parser.add_argument("--sign", default="-", help="On macOS: Developer ID identity or '-' for local ad-hoc signing")
     args = parser.parse_args()
     output = ROOT / "dist" / f"macos-{args.arch}"
@@ -53,6 +53,13 @@ def main():
             # Sign nested native libraries first. Signing the app host can implicitly sign its bundle.
             # Managed assemblies are embedded in the host, avoiding unsigned PE files in Contents/MacOS.
             if file.is_file() and file.suffix == ".dylib":
+                # Packages already target one CPU; don't ship the other CPU's graphics libraries too.
+                architectures = subprocess.check_output(["lipo", "-archs", str(file)], text=True).split()
+                target = "arm64" if args.arch == "arm64" else "x86_64"
+                if target not in architectures:
+                    raise RuntimeError(f"{file.name} does not contain {target}")
+                if len(architectures) > 1:
+                    subprocess.run(["lipo", str(file), "-thin", target, "-output", str(file)], check=True)
                 sign(file, args.sign)
         sign(bundle, args.sign)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
@@ -67,7 +74,7 @@ def main():
             mode = 0o755 if file.is_dir() or file.name == "ClipBoard.Mac" or file.suffix == ".dylib" else 0o644
             entry.external_attr = ((stat.S_IFDIR if file.is_dir() else stat.S_IFREG) | mode) << 16
             entry.compress_type = zipfile.ZIP_DEFLATED
-            z.writestr(entry, b"" if file.is_dir() else file.read_bytes())
+            z.writestr(entry, b"" if file.is_dir() else file.read_bytes(), compresslevel=9)
     print(archive)
 
 

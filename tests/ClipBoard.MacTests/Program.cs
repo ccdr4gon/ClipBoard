@@ -5,6 +5,9 @@ using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Headless;
 using Avalonia.Threading;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.VisualTree;
 using ClipBoard;
 using ClipBoard.Models;
 using ClipBoard.Services;
@@ -35,6 +38,7 @@ internal static class Program
                     ("Telegram 导入在原面板新增标签、只更新修改项", Telegram),
                     ("GIF 预览、编辑与原件恢复", Animation),
                     ("跨平台数据重载保留贴纸发布信息", Reload),
+                    ("Windows 风格历史布局、键盘选择和 Control+Command+V", PanelLayout),
                 ];
                 foreach (var test in tests)
                 {
@@ -161,6 +165,28 @@ internal static class Program
         store.Save(new("123456:local_test_only", 1234));
         Check(store.Load().Token == "123456:local_test_only" && !File.ReadAllText(Path.Combine(Root, "telegram-connection.json")).Contains("local_test_only"), "钥匙串保存失败");
         store.Save(new());
+    }
+    private static async Task PanelLayout()
+    {
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)App.Current!.ApplicationLifetime!).MainWindow!;
+        App.History.Capture(new(Text: "文字条目保持紧凑，图片直接显示在历史中。"));
+        App.History.Capture(new(Image: Png(6, 320, 1000)));
+        App.History.Capture(new(Text: "这是一条普通的剪贴板历史。"));
+        window.SelectView("history"); window.Show();
+        await Task.Delay(100);
+        Check(window.Width == 780 && window.Height == 640 && window.SystemDecorations == SystemDecorations.None, "面板大小或标题栏与 Windows 布局不符");
+        var list = window.GetVisualDescendants().OfType<ListBox>().Single();
+        var rows = list.GetVisualDescendants().OfType<ListBoxItem>().ToArray();
+        Check(rows.Length == 3 && rows[0].Bounds.Height < 55 && rows[1].Bounds.Height > 105 && rows[1].Bounds.Width > 600, "历史仍然显示成卡片网格");
+        Check(list.GetVisualDescendants().OfType<HistoryThumbnail>().Single().Bounds.Size == new Size(176, 99), "历史缩略图不再是 16:9");
+        window.FocusSearch(); window.KeyPressQwerty(PhysicalKey.ArrowDown, RawInputModifiers.None); window.KeyReleaseQwerty(PhysicalKey.ArrowDown, RawInputModifiers.None);
+        Check(list.SelectedItem != null, "方向键无法选择历史项");
+        Check(MacHotkey.KeyCode == 9 && MacHotkey.Modifiers == ((1u << 8) | (1u << 12)), "快捷键必须是 Control+Command+V");
+        window.CaptureRenderedFrame()?.Save(Path.Combine(Repo, "out", "macos-history-preview.png"));
+        window.SelectView("images"); await Task.Delay(100);
+        Check(list.Items.Count == 1, "图片标签混入文字");
+        window.CaptureRenderedFrame()?.Save(Path.Combine(Repo, "out", "macos-images-preview.png"));
+        window.SelectView("history");
     }
     private static byte[] Png(int seed, int w = 160, int h = 160)
     {

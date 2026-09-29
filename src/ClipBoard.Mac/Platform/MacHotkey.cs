@@ -4,6 +4,8 @@ namespace ClipBoard.Services;
 
 internal sealed class MacHotkey : IDisposable
 {
+    internal const uint KeyCode = 9;
+    internal const uint Modifiers = (1 << 8) | (1 << 12); // commandKey | controlKey
     private const string Carbon = "/System/Library/Frameworks/Carbon.framework/Carbon";
     [StructLayout(LayoutKind.Sequential)] private struct EventType { public uint Class, Kind; }
     [StructLayout(LayoutKind.Sequential)] private struct HotkeyId { public uint Signature, Id; }
@@ -20,8 +22,8 @@ internal sealed class MacHotkey : IDisposable
         };
         var type = new EventType { Class = 0x6B657962, Kind = 6 };
         int status = InstallEventHandler(GetApplicationEventTarget(), _handler, 1, ref type, 0, out _registration);
-        if (status == 0) status = RegisterEventHotKey(9, (1 << 8) | (1 << 11), new HotkeyId { Signature = 0x434C4950, Id = 1 }, GetApplicationEventTarget(), 0, out _hotkey);
-        if (status != 0) { Dispose(); throw new IOException($"无法注册 ⌘⌥V 快捷键（{status}），可从菜单栏打开。"); }
+        if (status == 0) status = RegisterEventHotKey(KeyCode, Modifiers, new HotkeyId { Signature = 0x434C4950, Id = 1 }, GetApplicationEventTarget(), 0, out _hotkey);
+        if (status != 0) { Dispose(); throw new IOException($"无法注册 ⌃⌘V 快捷键（{status}），可从菜单栏打开。"); }
     }
     public void Dispose()
     {

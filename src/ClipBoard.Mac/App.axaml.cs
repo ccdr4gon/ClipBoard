@@ -49,7 +49,7 @@ public partial class App : Application
                 _poll.Tick += (_, _) => Poll();
                 _poll.Start();
                 var menu = new NativeMenu();
-                var show = new NativeMenuItem("显示面板  ⌘⌥V"); show.Click += (_, _) => ShowPanel();
+                var show = new NativeMenuItem("显示面板  ⌃⌘V"); show.Click += (_, _) => ShowPanel();
                 var quit = new NativeMenuItem("退出 ClipBoard"); quit.Click += (_, _) => Quit();
                 menu.Items.Add(show); menu.Items.Add(new NativeMenuItemSeparator()); menu.Items.Add(quit);
                 using var icon = AssetLoader.Open(new Uri("avares://ClipBoard.Mac/Assets/tray.ico"));
@@ -81,7 +81,7 @@ public partial class App : Application
             int pid = MacNative.ForegroundPid();
             if (pid > 0 && pid != Environment.ProcessId) PreviousApp = pid;
         }
-        _window?.Show(); _window?.Activate();
+        _window?.Show(); _window?.Activate(); _window?.FocusSearch();
     }
     public async Task CopyAsync(Models.ClipItem item, bool paste)
     {

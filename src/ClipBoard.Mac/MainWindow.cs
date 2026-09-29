@@ -14,15 +14,8 @@ using ClipBoard.Views;
 
 namespace ClipBoard;
 
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
-    private readonly StackPanel _tabs = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
-    private readonly WrapPanel _cards = new() { Orientation = Orientation.Horizontal };
-    private readonly StackPanel _toolbar = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
-    private readonly TextBox _search = new() { Watermark = "搜索文字、标题、表情包…", Margin = new Thickness(0, 14) };
-    private readonly TextBlock _status = new() { Text = "双击卡片粘贴 · 右键管理 · ⌘⌥V 唤出", TextWrapping = TextWrapping.Wrap, FontSize = 12 };
-    private readonly Button _cancel = new() { Content = "取消任务", IsVisible = false };
-    private readonly Grid _body = new() { RowDefinitions = new RowDefinitions("Auto,Auto,*") };
     private FavoriteFolder? _folder;
     private string _mode = "history";
     private CancellationTokenSource? _work;
@@ -34,33 +27,8 @@ public sealed class MainWindow : Window
     private App Application => (App)App.Current!;
     public MainWindow()
     {
-        Title = "ClipBoard"; Width = 820; Height = 660; MinWidth = 630; MinHeight = 460;
-        WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        var root = new Grid { Margin = new Thickness(26, 16), RowDefinitions = new RowDefinitions("Auto,*,Auto") };
-        var heading = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        var brand = new StackPanel();
-        brand.Children.Add(new TextBlock { Text = "ClipBoard", FontFamily = new FontFamily("Georgia"), FontSize = 30, Foreground = Ink });
-        brand.Children.Add(new TextBlock { Text = "随手收藏，随时取用。", Foreground = Brush.Parse("#857867"), FontSize = 12, Margin = new Thickness(0, 3, 0, 16) });
-        heading.Children.Add(brand);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(Button("Telegram 连接", SettingsAsync));
-        actions.Children.Add(Button("设置", SystemSettingsAsync));
-        Grid.SetColumn(actions, 1); heading.Children.Add(actions);
-        root.Children.Add(heading);
-        var top = new StackPanel();
-        top.Children.Add(new ScrollViewer { Content = _tabs, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled });
-        top.Children.Add(_search); _body.Children.Add(top);
-        var toolbarScroll = new ScrollViewer { Content = _toolbar, Margin = new Thickness(0, 0, 0, 12),
-            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
-        Grid.SetRow(toolbarScroll, 1); _body.Children.Add(toolbarScroll);
-        var scroll = new ScrollViewer { Content = _cards, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
-        Grid.SetRow(scroll, 2); _body.Children.Add(scroll);
-        Grid.SetRow(_body, 1); root.Children.Add(_body);
-        var bottom = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 12, 0, 0) };
-        bottom.Children.Add(_status); Grid.SetColumn(_cancel, 1); bottom.Children.Add(_cancel);
-        Grid.SetRow(bottom, 2); root.Children.Add(bottom); Content = root;
+        BuildPanel();
+        Opened += (_, _) => FocusSearch();
         _cancel.Click += (_, _) => _work?.Cancel();
         _search.TextChanged += (_, _) => RenderCards();
         App.History.Items.CollectionChanged += ItemsChanged;
@@ -68,7 +36,8 @@ public sealed class MainWindow : Window
         App.Favorites.Folders.CollectionChanged += (_, _) => { SubscribeFolders(); RenderTabs(); };
         SubscribeFolders(); RenderTabs(); RenderToolbar(); RenderCards();
         Closing += (_, e) => { if (!Application.Quitting) { e.Cancel = true; Hide(); } };
-        KeyDown += (_, e) => { if (e.Key == Key.Escape) { Hide(); e.Handled = true; } };
+        AddHandler(KeyDownEvent, OnPanelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        Deactivated += (_, _) => { if (!_pinned && !_contextOpen && _work == null) Hide(); };
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DragOverEvent, (_, e) => e.DragEffects = _folder != null && e.DataTransfer.Contains(DataFormat.File) ? DragDropEffects.Copy : DragDropEffects.None);
         AddHandler(DragDrop.DropEvent, async (_, e) =>
@@ -91,7 +60,8 @@ public sealed class MainWindow : Window
         _renderQueued = true;
         Dispatcher.UIThread.Post(() => { _renderQueued = false; RenderCards(); });
     }
-    public void SetStatus(string message) => _status.Text = message;
+    public void SetStatus(string message) { _status.Text = message; _status.IsVisible = !string.IsNullOrEmpty(message); }
+    internal void FocusSearch() => _search.Focus();
     internal void CancelWork() => _work?.Cancel();
     private IProgress<string> Progress() => new Progress<string>(SetStatus);
     private static Button Button(string title, Func<Task> action)
@@ -99,74 +69,27 @@ public sealed class MainWindow : Window
         var b = new Button { Content = title, VerticalAlignment = VerticalAlignment.Center };
         b.Click += async (_, _) => await action(); return b;
     }
-    private void RenderTabs()
-    {
-        _tabs.Children.Clear();
-        foreach (var (key, label) in new[] { ("history", "历史"), ("images", "图片"), ("emoji", "Emoji") }) AddTab(label, key, null);
-        foreach (var folder in App.Favorites.Folders) AddTab(folder.Name, "folder", folder);
-        _tabs.Children.Add(Button("＋", () => RunAsync(async _ =>
-        {
-            var value = await Dialogs.Form(this, "新标签", "创建一个收藏夹或表情包栏目。", ("名称", "新表情包", false));
-            if (value != null && !string.IsNullOrWhiteSpace(value[0])) SelectFolder(App.Favorites.CreateFolder(value[0].Trim(), FolderKind.Meme));
-        })));
-    }
-    private void AddTab(string label, string mode, FavoriteFolder? folder)
-    {
-        var button = Button(label, () => { _mode = mode; _folder = folder; RenderTabs(); RenderToolbar(); RenderCards(); return Task.CompletedTask; });
-        button.Classes.Add("tab");
-        if (_mode == mode && _folder == folder) button.Classes.Add("selected");
-        _tabs.Children.Add(button);
-    }
-    public void SelectFolder(FavoriteFolder folder) { _folder = folder; _mode = "folder"; RenderTabs(); RenderToolbar(); RenderCards(); }
-    private void RenderToolbar()
-    {
-        _toolbar.Children.Clear();
-        if (_folder != null)
-        {
-            _toolbar.Children.Add(Button("导入文件", ImportFilesAsync));
-            _toolbar.Children.Add(Button("导入 Telegram", ImportTelegramAsync));
-            _toolbar.Children.Add(Button("导出", ExportAsync));
-            _toolbar.Children.Add(Button("发布 / 同步", PublishAsync));
-            _toolbar.Children.Add(Button("管理标签", ManageFolderAsync));
-        }
-        else if (_mode != "emoji") _toolbar.Children.Add(Button("清空历史", () => RunAsync(async _ =>
-        {
-            if (await Dialogs.Confirm(this, "清空历史", "删除全部未置顶的剪贴板历史？收藏和置顶内容会保留。")) App.History.Clear();
-        })));
-    }
     public IReadOnlyList<ClipItem> VisibleItems => (_folder != null ? _folder.Items
         : App.Favorites.PinnedHistory.Concat(App.History.Items))
         .Where(i => _mode != "images" || i.Kind is ClipKind.Image or ClipKind.Gif or ClipKind.VideoSticker or ClipKind.VectorSticker)
+        .Where(i => _mode != "emoji" || i.Kind == ClipKind.Text && IsPureEmoji(i.Text))
         .Where(i => string.IsNullOrWhiteSpace(_search.Text) || (i.Title + " " + i.Preview + " " + i.StickerEmojiLabel).Contains(_search.Text, StringComparison.OrdinalIgnoreCase)).ToArray();
-    private void RenderCards()
+    private static bool IsPureEmoji(string? text)
     {
-        _cards.Children.Clear();
-        if (_mode == "emoji")
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var elements = StringInfo.GetTextElementEnumerator(text);
+        while (elements.MoveNext())
         {
-            foreach (var emoji in new[] { "😀", "😃", "😁", "😂", "🥹", "😊", "😍", "🥰", "😘", "😎", "🤔", "🫠", "😭", "😡", "🥳", "😴", "👍", "👎", "👏", "🙏", "💪", "❤️", "💔", "🔥", "🎉", "✨", "🌹", "👀", "🐱", "🐶", "🍀", "☕" })
-                _cards.Children.Add(Button(emoji, () => CopyAsync(new ClipItem { Kind = ClipKind.Text, Text = emoji }, false)));
-            return;
+            string element = elements.GetTextElement();
+            if (string.IsNullOrWhiteSpace(element)) continue;
+            if (!element.EnumerateRunes().Any(r => r.Value is >= 0x1F000 and <= 0x1FFFF
+                or >= 0x2600 and <= 0x27BF or >= 0x2190 and <= 0x21FF or >= 0x2300 and <= 0x23FF
+                or 0x200D or 0xFE0F or 0x20E3 or >= 0xE0020 and <= 0xE007F)) return false;
         }
-        foreach (var item in VisibleItems) _cards.Children.Add(Card(item));
-        if (_cards.Children.Count == 0) _cards.Children.Add(new TextBlock { Text = _folder != null ? "将图片拖到这里，或导入 Telegram 贴纸包。" : "复制文字、图片或文件后，会出现在这里。", Margin = new Thickness(12, 30), Foreground = Brush.Parse("#857867") });
+        return true;
     }
-    private Control Card(ClipItem item)
+    private void AttachItemActions(Control card, ClipItem item)
     {
-        var content = new StackPanel { Spacing = 7 };
-        if (item.Image != null)
-        {
-            if (_mode == "history")
-            {
-                var preview = new HistoryThumbnail { Source = item.Image, Width = 152, Height = 85.5 };
-                ToolTip.SetTip(preview, new Image { Source = item.Image, MaxWidth = 400, MaxHeight = 400, Stretch = Stretch.Uniform });
-                content.Children.Add(preview);
-            }
-            else content.Children.Add(new Image { Source = item.Image, Height = 145, Stretch = Stretch.Uniform });
-        }
-        else content.Children.Add(new TextBlock { Text = item.Preview, Height = 145, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 14 });
-        content.Children.Add(new TextBlock { Text = (item.IsPinned ? "● " : "") + (item.HasTitle ? item.Title : item.Kind == ClipKind.Text ? "文字" : item.Preview), FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis });
-        content.Children.Add(new TextBlock { Text = item.Sticker != null ? item.StickerEmojiLabel + " · " + item.StickerStatus : item.TimeLabel, FontSize = 10, Foreground = Brush.Parse("#857867") });
-        var card = new Border { Width = 174, Margin = new Thickness(0, 0, 12, 12), Padding = new Thickness(10), Background = Brush.Parse("#FFFDFA"), BorderBrush = Brush.Parse("#E6DECF"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(3), Child = content, BoxShadow = BoxShadows.Parse("1 3 7 0 #16000000") };
         card.DoubleTapped += async (_, _) => await CopyAsync(item, true);
         var menu = new ContextMenu();
         AddMenu(menu, "复制", () => CopyAsync(item, false)); AddMenu(menu, "粘贴到原应用", () => CopyAsync(item, true));
@@ -194,7 +117,8 @@ public sealed class MainWindow : Window
             collect.Items.Add(option);
         }
         menu.Items.Add(collect); card.ContextMenu = menu;
-        return card;
+        menu.Opened += (_, _) => _contextOpen = true;
+        menu.Closed += (_, _) => _contextOpen = false;
     }
     private static void AddMenu(ContextMenu menu, string title, Func<Task> action)
     {
@@ -313,7 +237,8 @@ public sealed class MainWindow : Window
         var preview = new Window { Title = "动画预览", Width = 450, Height = 480, Content = animation, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         await preview.ShowDialog(this);
     });
-    private Task SettingsAsync() => RunAsync(async ct =>
+    private Task SettingsAsync() => RunAsync(SettingsFormAsync);
+    private async Task SettingsFormAsync(CancellationToken ct)
     {
         try { LoadConnection(); } catch (Exception ex) { SetStatus(ex.Message); }
         var input = await Dialogs.Form(this, "Telegram 连接", "Token 保存在 macOS 钥匙串。所有者填写你主账号的 Telegram 用户 ID；填 0 可读取你发给机器人的 /start 消息。", 
@@ -336,11 +261,11 @@ public sealed class MainWindow : Window
         new TelegramConnectionStore(App.Persistence.RootDirectory).Save(connection);
         _connection = connection; _connectionLoaded = true;
         if (owner > 0) SetStatus($"连接已保存。贴纸包所有者：{owner}。");
-    });
+    }
     private Task SystemSettingsAsync() => RunAsync(async _ =>
     {
         var panel = new StackPanel { Spacing = 16, Margin = new Thickness(24) };
-        panel.Children.Add(new TextBlock { Text = "⌘⌥V 显示面板；双击卡片粘贴。关闭窗口后继续在菜单栏运行。", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = "⌃⌘V 显示面板；双击卡片粘贴。关闭窗口后继续在菜单栏运行。", TextWrapping = TextWrapping.Wrap });
         var login = new CheckBox { Content = "登录时启动 ClipBoard", IsEnabled = OperatingSystem.IsMacOS() && !App.Preview };
         var message = new TextBlock { TextWrapping = TextWrapping.Wrap };
         if (login.IsEnabled) login.IsChecked = MacLogin.Enabled;
@@ -350,6 +275,7 @@ public sealed class MainWindow : Window
             catch (Exception ex) { message.Text = ex.Message; }
         };
         panel.Children.Add(login);
+
         panel.Children.Add(Button("打开辅助功能设置", () =>
         {
             if (OperatingSystem.IsMacOS()) Process.Start(new ProcessStartInfo("open") { ArgumentList = { "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" }, UseShellExecute = false });
@@ -358,7 +284,10 @@ public sealed class MainWindow : Window
         panel.Children.Add(new TextBlock { Text = "复制和记录历史不需要辅助功能权限。自动粘贴需要授权；未授权时可手动按 ⌘V。", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(message);
         var dialog = new Window { Title = "设置", Width = 470, SizeToContent = SizeToContent.Height, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        bool telegram = false;
+        panel.Children.Add(Button("Telegram 连接…", () => { telegram = true; dialog.Close(); return Task.CompletedTask; }));
         panel.Children.Add(Button("完成", () => { dialog.Close(); return Task.CompletedTask; }));
         await dialog.ShowDialog(this);
+        if (telegram) await SettingsFormAsync(default);
     });
 }
