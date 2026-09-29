@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", choices=["arm64", "x64"], default="arm64")
-    parser.add_argument("--version", default="1.1.1")
+    parser.add_argument("--version", default="1.1.2")
     parser.add_argument("--sign", default="-", help="On macOS: Developer ID identity or '-' for local ad-hoc signing")
     args = parser.parse_args()
     output = ROOT / "dist" / f"macos-{args.arch}"

@@ -76,6 +76,7 @@ public partial class App : Application
     }
     public void ShowPanel()
     {
+        if (_window != null && Views.Dialogs.ActivateModal(_window)) return;
         if (!Preview && OperatingSystem.IsMacOS())
         {
             int pid = MacNative.ForegroundPid();

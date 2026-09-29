@@ -25,7 +25,13 @@ internal static class Program
     {
         App.Preview = true; App.ProfileDirectory = Root;
         var lifetime = new ClassicDesktopStyleApplicationLifetime();
-        AppBuilder.Configure<App>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithLifetime(lifetime);
+        bool nativeDialogs = args.Contains("--native-dialogs");
+        if (nativeDialogs)
+        {
+            Check(OperatingSystem.IsMacOS(), "原生弹窗测试需要 Mac");
+            AppBuilder.Configure<App>().UsePlatformDetect().With(new MacOSPlatformOptions { ShowInDock = false }).SetupWithLifetime(lifetime);
+        }
+        else AppBuilder.Configure<App>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithLifetime(lifetime);
         int failures = 0;
         using var finish = new CancellationTokenSource();
         Dispatcher.UIThread.Post(async () =>
@@ -39,7 +45,9 @@ internal static class Program
                     ("GIF 预览、编辑与原件恢复", Animation),
                     ("跨平台数据重载保留贴纸发布信息", Reload),
                     ("Windows 风格历史布局、键盘选择和 Control+Command+V", PanelLayout),
+                    ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
                 ];
+                if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
                 foreach (var test in tests)
                 {
                     try { await test.Run(); Console.WriteLine("PASS " + test.Name); }
@@ -187,6 +195,57 @@ internal static class Program
         Check(list.Items.Count == 1, "图片标签混入文字");
         window.CaptureRenderedFrame()?.Save(Path.Combine(Repo, "out", "macos-images-preview.png"));
         window.SelectView("history");
+    }
+    private static async Task SettingsDialogs(bool native)
+    {
+        var app = (App)App.Current!;
+        var lifetime = (ClassicDesktopStyleApplicationLifetime)app.ApplicationLifetime!;
+        var window = (MainWindow)lifetime.MainWindow!;
+        window.Show(); window.Activate();
+        await Task.Delay(100);
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            var settings = window.GetVisualDescendants().OfType<Button>().Single(b => b.Content as string == "☀");
+            settings.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+            await Task.Delay(100);
+            var dialog = window.OwnedWindows.Single(w => w.Title == "设置");
+            try
+            {
+                Check(dialog.IsVisible && dialog.Topmost && !window.Topmost, "设置弹窗被置顶主面板压住");
+                var done = dialog.GetVisualDescendants().OfType<Button>().Single(b => b.Content as string == "完成");
+                Check(done.IsEffectivelyEnabled && !window.GetVisualDescendants().OfType<ListBox>().Single().IsEffectivelyEnabled, "弹窗不可操作或主面板未进入等待状态");
+                app.ShowPanel();
+                Check(!window.Topmost && Dialogs.HasModal(window), "快捷键重新把主面板提升到了弹窗上方");
+                if (native)
+                {
+                    using var pool = new MacNative.Pool();
+                    var windows = MacNative.Call(MacNative.Call(MacNative.Class("NSApplication"), "sharedApplication"), "windows");
+                    long Level(string title)
+                    {
+                        for (int i = 0; i < (int)MacNative.Call(windows, "count"); i++)
+                        {
+                            var w = MacNative.Call(windows, "objectAtIndex:", i);
+                            if (MacNative.Text(MacNative.Call(w, "title")) == title) return (long)MacNative.Call(w, "level");
+                        }
+                        throw new InvalidOperationException("未找到原生窗口：" + title);
+                    }
+                    Check(Level("设置") > Level("ClipBoard"), "macOS 实际窗口层级仍然颠倒");
+                }
+                if (attempt == 0) done.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+                else dialog.Close();
+                await Task.Delay(100);
+                Check(!Dialogs.HasModal(window) && window.Topmost && window.GetVisualDescendants().OfType<ListBox>().Single().IsEffectivelyEnabled,
+                    "关闭设置后主面板没有恢复操作");
+            }
+            finally { if (dialog.IsVisible) dialog.Close(); }
+        }
+        var form = Dialogs.Form(window, "测试输入", "测试关闭后恢复", ("文字", "", false));
+        var input = window.OwnedWindows.Single(w => w.Title == "测试输入");
+        Check(input.Topmost && !window.Topmost, "输入弹窗未应用层级修复");
+        input.Close(); await form;
+        try { await Dialogs.PickAsync<int>(window, () => Task.FromException<int>(new IOException("模拟选择器失败"))); }
+        catch (IOException) { }
+        Check(window.Topmost && !Dialogs.HasModal(window), "选择器失败后没有恢复窗口层级");
     }
     private static byte[] Png(int seed, int w = 160, int h = 160)
     {

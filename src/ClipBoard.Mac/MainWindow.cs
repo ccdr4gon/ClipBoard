@@ -37,7 +37,7 @@ public sealed partial class MainWindow : Window
         SubscribeFolders(); RenderTabs(); RenderToolbar(); RenderCards();
         Closing += (_, e) => { if (!Application.Quitting) { e.Cancel = true; Hide(); } };
         AddHandler(KeyDownEvent, OnPanelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
-        Deactivated += (_, _) => { if (!_pinned && !_contextOpen && _work == null) Hide(); };
+        Deactivated += (_, _) => { if (!_pinned && !_contextOpen && _work == null && !Dialogs.HasModal(this)) Hide(); };
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DragOverEvent, (_, e) => e.DragEffects = _folder != null && e.DataTransfer.Contains(DataFormat.File) ? DragDropEffects.Copy : DragDropEffects.None);
         AddHandler(DragDrop.DropEvent, async (_, e) =>
@@ -150,7 +150,7 @@ public sealed partial class MainWindow : Window
     }
     private static readonly FilePickerFileType Images = new("图片与贴纸") { Patterns = ["*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.webm", "*.tgs", "*.bmp"] };
     private async Task<string[]> PickFiles(bool multiple)
-        => (await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "导入图片或贴纸", AllowMultiple = multiple, FileTypeFilter = [Images] }))
+        => (await Dialogs.PickAsync(this, () => StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "导入图片或贴纸", AllowMultiple = multiple, FileTypeFilter = [Images] })))
             .Select(f => f.TryGetLocalPath()).OfType<string>().ToArray();
     private Task ImportFilesAsync() => RunAsync(async ct =>
     {
@@ -169,7 +169,7 @@ public sealed partial class MainWindow : Window
     });
     private Task ExportAsync() => RunAsync(async ct =>
     {
-        var selected = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "导出 Telegram 规格素材" });
+        var selected = await Dialogs.PickAsync(this, () => StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "导出 Telegram 规格素材" }));
         var path = selected.FirstOrDefault()?.TryGetLocalPath();
         if (path != null) SetStatus("已导出到 " + await Library().ExportAsync(_folder!, path, Progress(), ct));
     });
@@ -230,12 +230,12 @@ public sealed partial class MainWindow : Window
             using var full = item.ImageBlobName != null ? App.Persistence.LoadImageBlob(item.ImageBlobName) : null;
             var window = new Window { Title = item.TitleOrUntitled, Width = 560, Height = 580, WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Content = new Image { Source = full ?? item.Image, Stretch = Stretch.Uniform, Margin = new Thickness(18) } };
-            await window.ShowDialog(this); return;
+            await Dialogs.ShowAsync(window, this); return;
         }
         string path = await Media().CreatePreviewAsync(item, ct);
         using var animation = new GifPreview(path);
         var preview = new Window { Title = "动画预览", Width = 450, Height = 480, Content = animation, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        await preview.ShowDialog(this);
+        await Dialogs.ShowAsync(preview, this);
     });
     private Task SettingsAsync() => RunAsync(SettingsFormAsync);
     private async Task SettingsFormAsync(CancellationToken ct)
@@ -287,7 +287,7 @@ public sealed partial class MainWindow : Window
         bool telegram = false;
         panel.Children.Add(Button("Telegram 连接…", () => { telegram = true; dialog.Close(); return Task.CompletedTask; }));
         panel.Children.Add(Button("完成", () => { dialog.Close(); return Task.CompletedTask; }));
-        await dialog.ShowDialog(this);
+        await Dialogs.ShowAsync(dialog, this);
         if (telegram) await SettingsFormAsync(default);
     });
 }
