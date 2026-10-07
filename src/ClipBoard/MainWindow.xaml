@@ -231,7 +231,7 @@
                                    Text="— 0 entries —"/>
                         <TextBlock FontFamily="{StaticResource Mono}" FontSize="10.5"
                                    Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                   Text="ctrl+alt+v — summon    ↑↓ — select    enter — paste"/>
+                                   Text="ctrl+alt+v — summon    ↑↓ — select    enter — paste    shift+enter — plain text"/>
                     </DockPanel>
                 </Border>
             </Grid>

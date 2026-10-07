@@ -46,8 +46,19 @@ public sealed class HistoryStore(FavoritesStore favorites)
         }
         else if (!string.IsNullOrEmpty(content.Text))
         {
-            if (previous?.Kind == ClipKind.Text && previous.Text == content.Text) return;
-            item = new() { Kind = ClipKind.Text, Text = content.Text };
+            string text = RichText.PlainText(content.Text, content.Rich?.Html);
+            if (previous?.Kind == ClipKind.Text && previous.Text == text)
+            {
+                // 同一段文字再次复制时带上了格式：补到原条目，不新增。
+                if (content.Rich != null && previous.RichBlobName == null)
+                {
+                    previous.RichBlobName = _persistence.SaveRichBlob(content.Rich);
+                    favorites.Save();
+                }
+                return;
+            }
+            item = new() { Kind = ClipKind.Text, Text = text };
+            if (content.Rich != null) item.RichBlobName = _persistence.SaveRichBlob(content.Rich);
         }
         else return;
         InsertExisting(item);

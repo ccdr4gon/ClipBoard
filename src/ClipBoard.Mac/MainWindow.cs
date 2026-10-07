@@ -8,6 +8,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using ClipBoard.Models;
 using ClipBoard.Services;
 using ClipBoard.Views;
@@ -30,13 +31,23 @@ public sealed partial class MainWindow : Window
         BuildPanel();
         Opened += (_, _) => FocusSearch();
         _cancel.Click += (_, _) => _work?.Cancel();
-        _search.TextChanged += (_, _) => RenderCards();
+        // 同步响应文字变化（TextChanged 是异步派发的），打开面板时清空搜索后立即回到顶部。
+        _search.PropertyChanged += (_, e) => { if (e.Property == TextBox.TextProperty) { RenderCards(); ResetPosition(); } };
         App.History.Items.CollectionChanged += ItemsChanged;
         App.Favorites.PinnedHistory.CollectionChanged += ItemsChanged;
         App.Favorites.Folders.CollectionChanged += (_, _) => { SubscribeFolders(); RenderTabs(); };
         SubscribeFolders(); RenderTabs(); RenderToolbar(); RenderCards();
         Closing += (_, e) => { if (!Application.Quitting) { e.Cancel = true; Hide(); } };
         AddHandler(KeyDownEvent, OnPanelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        // 与 Windows 一致：单击即粘贴，按住 Shift 粘贴为纯文本。在列表上处理，点到行内空白或内边距也算；
+        // Control+单击是 macOS 的右键，留给菜单。
+        _items.Tapped += async (_, e) =>
+        {
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
+            if ((e.Source as Visual)?.FindAncestorOfType<ListBoxItem>(includeSelf: true)?.DataContext is not ClipItem item) return;
+            e.Handled = true;
+            await CopyAsync(item, true, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+        };
         Deactivated += (_, _) => { if (!_pinned && !_contextOpen && _work == null && !Dialogs.HasModal(this)) Hide(); };
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DragOverEvent, (_, e) => e.DragEffects = _folder != null && e.DataTransfer.Contains(DataFormat.File) ? DragDropEffects.Copy : DragDropEffects.None);
@@ -62,6 +73,17 @@ public sealed partial class MainWindow : Window
     }
     public void SetStatus(string message) { _status.Text = message; _status.IsVisible = !string.IsNullOrEmpty(message); }
     internal void FocusSearch() => _search.Focus();
+    /// <summary>每次重新打开面板：清空搜索，列表回到顶部并选中第一条，回车即可粘贴最新内容。</summary>
+    internal void ResetView()
+    {
+        if (string.IsNullOrEmpty(_search.Text)) ResetPosition();
+        else _search.Text = ""; // 文字变化会重新渲染并回到顶部
+    }
+    private void ResetPosition()
+    {
+        _items.SelectedIndex = _items.ItemCount > 0 ? 0 : -1;
+        _items.FindDescendantOfType<ScrollViewer>()?.ScrollToHome();
+    }
     internal void CancelWork() => _work?.Cancel();
     private IProgress<string> Progress() => new Progress<string>(SetStatus);
     private static Button Button(string title, Func<Task> action)
@@ -90,9 +112,15 @@ public sealed partial class MainWindow : Window
     }
     private void AttachItemActions(Control card, ClipItem item)
     {
-        card.DoubleTapped += async (_, _) => await CopyAsync(item, true);
         var menu = new ContextMenu();
-        AddMenu(menu, "复制", () => CopyAsync(item, false)); AddMenu(menu, "粘贴到原应用", () => CopyAsync(item, true));
+        if (item.HasRichText)
+        {
+            AddMenu(menu, "粘贴（保留格式）", () => CopyAsync(item, true));
+            AddMenu(menu, "粘贴为纯文本", () => CopyAsync(item, true, plainText: true));
+            AddMenu(menu, "复制为纯文本", () => CopyAsync(item, false, plainText: true));
+        }
+        else AddMenu(menu, "粘贴到原应用", () => CopyAsync(item, true));
+        AddMenu(menu, "复制", () => CopyAsync(item, false));
         if (item.Kind is ClipKind.Image or ClipKind.Gif or ClipKind.VideoSticker or ClipKind.VectorSticker)
             AddMenu(menu, "预览", () => PreviewAsync(item));
         if (_folder != null)
@@ -124,7 +152,7 @@ public sealed partial class MainWindow : Window
     {
         var item = new MenuItem { Header = title }; item.Click += async (_, _) => await action(); menu.Items.Add(item);
     }
-    private Task CopyAsync(ClipItem item, bool paste) => RunAsync(_ => Application.CopyAsync(item, paste));
+    private Task CopyAsync(ClipItem item, bool paste, bool plainText = false) => RunAsync(_ => Application.CopyAsync(item, paste, plainText));
     private async Task RunAsync(Func<CancellationToken, Task> action)
     {
         if (_work != null) return;
@@ -265,7 +293,7 @@ public sealed partial class MainWindow : Window
     private Task SystemSettingsAsync() => RunAsync(async _ =>
     {
         var panel = new StackPanel { Spacing = 16, Margin = new Thickness(24) };
-        panel.Children.Add(new TextBlock { Text = "⌃⌘V 显示面板；双击卡片粘贴。关闭窗口后继续在菜单栏运行。", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = "⌃⌘V 显示面板；单击或回车粘贴，按住 Shift 粘贴为纯文本。关闭窗口后继续在菜单栏运行。", TextWrapping = TextWrapping.Wrap });
         var login = new CheckBox { Content = "登录时启动 ClipBoard", IsEnabled = OperatingSystem.IsMacOS() && !App.Preview };
         var message = new TextBlock { TextWrapping = TextWrapping.Wrap };
         if (login.IsEnabled) login.IsChecked = MacLogin.Enabled;
@@ -281,7 +309,9 @@ public sealed partial class MainWindow : Window
             if (OperatingSystem.IsMacOS()) Process.Start(new ProcessStartInfo("open") { ArgumentList = { "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" }, UseShellExecute = false });
             return Task.CompletedTask;
         }));
-        panel.Children.Add(new TextBlock { Text = "复制和记录历史不需要辅助功能权限。自动粘贴需要授权；未授权时可手动按 ⌘V。", TextWrapping = TextWrapping.Wrap });
+        string trust = !OperatingSystem.IsMacOS() || App.Preview ? "" : MacNative.IsAccessibilityTrusted ? "当前状态：已授权。" : "当前状态：未授权。";
+        panel.Children.Add(new TextBlock { Text = "复制和记录历史不需要辅助功能权限。自动粘贴需要授权；未授权时可手动按 ⌘V。" + trust +
+            "\n更新应用后若开关显示已打开但仍无法自动粘贴，请在列表里用“−”移除 ClipBoard 再重新添加。", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(message);
         var dialog = new Window { Title = "设置", Width = 470, SizeToContent = SizeToContent.Height, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         bool telegram = false;

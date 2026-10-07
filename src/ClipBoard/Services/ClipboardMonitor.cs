@@ -14,6 +14,7 @@ public class ClipboardChangedEventArgs : EventArgs
     public BitmapSource? Image { get; init; }
     public string[]? Files { get; init; }
     public byte[]? GifBytes { get; init; }
+    public RichContent? Rich { get; init; }
 }
 
 public class ClipboardMonitor : IDisposable
@@ -105,6 +106,7 @@ public class ClipboardMonitor : IDisposable
                 {
                     Kind = ClipKind.Text,
                     Text = text,
+                    Rich = ReadRichContent(),
                 });
             }
         }
@@ -117,6 +119,17 @@ public class ClipboardMonitor : IDisposable
         {
             // Swallow: next update will try again.
         }
+    }
+
+    // 格式读取失败只影响“保留格式”粘贴，不能丢掉纯文本。
+    private static RichContent? ReadRichContent()
+    {
+        string? html = null, rtf = null;
+        try { if (Clipboard.ContainsData(DataFormats.Html)) html = RichText.FromCfHtml(Clipboard.GetData(DataFormats.Html) as string); }
+        catch (Exception) { }
+        try { if (Clipboard.ContainsData(DataFormats.Rtf)) rtf = Clipboard.GetData(DataFormats.Rtf) as string; }
+        catch (Exception) { }
+        return RichText.Create(html, rtf);
     }
 
     private void QueueChange(ClipboardChangedEventArgs change, string? gifUrl = null)

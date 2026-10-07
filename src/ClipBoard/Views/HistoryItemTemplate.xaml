@@ -84,6 +84,12 @@
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
                 <TextBlock Text="📌" Foreground="{StaticResource Accent}" Margin="0,0,6,0"
                            Visibility="{Binding PinVisibility}" FontSize="11"/>
+                <Border Visibility="{Binding RichVisibility}" Margin="0,0,7,0" Padding="4,0"
+                        CornerRadius="3" BorderThickness="1" BorderBrush="{StaticResource Divider}"
+                        VerticalAlignment="Center"
+                        ToolTip="带格式（列表编号、粗体等）。Enter / 单击保留格式粘贴，Shift+Enter / Shift+单击粘贴为纯文本">
+                    <TextBlock Text="格式" FontSize="9.5" Foreground="{StaticResource Accent}"/>
+                </Border>
                 <TextBlock FontFamily="{StaticResource Mono}" FontSize="10.5"
                            Foreground="{StaticResource Muted}" Text="{Binding TimeLabel}"/>
             </StackPanel>

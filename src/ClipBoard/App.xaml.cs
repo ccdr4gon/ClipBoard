@@ -197,7 +197,7 @@ public partial class App : Application
         switch (e.Kind)
         {
             case ClipKind.Text when e.Text is { Length: > 0 }:
-                History.AddText(e.Text);
+                History.AddText(e.Text, e.Rich);
                 break;
             case ClipKind.Image when e.Image is not null:
                 History.AddImage(e.Image);

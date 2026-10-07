@@ -28,11 +28,23 @@ public class HistoryStore
 
     private void TriggerSave() => _favorites.Save();
 
-    public void AddText(string text)
+    public void AddText(string text, RichContent? rich = null)
     {
         if (string.IsNullOrEmpty(text)) return;
-        if (Items.Count > 0 && Items[0].Kind == ClipKind.Text && Items[0].Text == text) return;
-        InsertNew(new ClipItem { Kind = ClipKind.Text, Text = text });
+        text = RichText.PlainText(text, rich?.Html);
+        if (Items.Count > 0 && Items[0].Kind == ClipKind.Text && Items[0].Text == text)
+        {
+            // 同一段文字再次复制时带上了格式：补到原条目，不新增。
+            if (rich != null && Items[0].RichBlobName == null && _persistence != null)
+            {
+                Items[0].RichBlobName = _persistence.SaveRichBlob(rich);
+                TriggerSave();
+            }
+            return;
+        }
+        var item = new ClipItem { Kind = ClipKind.Text, Text = text };
+        if (rich != null && _persistence != null) item.RichBlobName = _persistence.SaveRichBlob(rich);
+        InsertNew(item);
     }
 
     public void AddImage(BitmapSource image)
@@ -157,15 +169,27 @@ public class HistoryStore
         }
     }
 
-    public bool CopyToClipboard(ClipItem item)
+    /// <param name="plainText">只写纯文本，丢弃复制时带来的 HTML / RTF 格式。</param>
+    public bool CopyToClipboard(ClipItem item, bool plainText = false)
     {
         _isWritingClipboard = true;
-        try { return TryCopyToClipboard(item); }
+        try { return TryCopyToClipboard(item, plainText); }
         finally { _isWritingClipboard = false; }
     }
 
-    private bool TryCopyToClipboard(ClipItem item)
+    /// <summary>纯文本加上原有的 HTML / RTF，让 Word、邮件、笔记等保留列表编号和格式。</summary>
+    internal static DataObject CreateTextData(string text, RichContent? rich)
     {
+        var data = new DataObject();
+        data.SetData(DataFormats.UnicodeText, text);
+        if (rich?.Html is { Length: > 0 } html) data.SetData(DataFormats.Html, RichText.ToCfHtml(html));
+        if (rich?.Rtf is { Length: > 0 } rtf) data.SetData(DataFormats.Rtf, rtf);
+        return data;
+    }
+
+    private bool TryCopyToClipboard(ClipItem item, bool plainText)
+    {
+        var rich = !plainText && item.HasRichText ? _persistence?.LoadRichBlob(item.RichBlobName) : null;
         for (int attempt = 0; attempt < 5; attempt++)
         {
             try
@@ -174,7 +198,7 @@ public class HistoryStore
                 {
                     case ClipKind.Text:
                         if (item.Text == null) return false;
-                        Clipboard.SetDataObject(item.Text, true);
+                        Clipboard.SetDataObject(CreateTextData(item.Text, rich), true);
                         break;
                     case ClipKind.Image:
                         // 复制要保真：优先从磁盘读全分辨率原图，缩略图仅作回退。

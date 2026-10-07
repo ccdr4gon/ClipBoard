@@ -96,7 +96,7 @@ public sealed partial class MainWindow
         Grid.SetRow(_body, 2); root.Children.Add(_body);
 
         var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(18, 0) };
-        footer.Children.Add(Label("ctrl+cmd+v — summon    ↑↓ — select    enter — paste", 10.5, true));
+        footer.Children.Add(Label("ctrl+cmd+v — summon    ↑↓ — select    enter — paste    shift+enter — plain text", 10.5, true));
         Grid.SetColumn(_entryCount, 1); footer.Children.Add(_entryCount);
         var footerLine = new Border { Background = Brush.Parse("#D1FDFAF3"), BorderBrush = Divider, BorderThickness = new Thickness(0, 1, 0, 0), Child = footer };
         Grid.SetRow(footerLine, 3); root.Children.Add(footerLine);
@@ -138,7 +138,7 @@ public sealed partial class MainWindow
     }
     internal void SelectView(string mode, FavoriteFolder? folder = null)
     {
-        _mode = mode; _folder = folder; RenderTabs(); RenderToolbar(); RenderCards();
+        _mode = mode; _folder = folder; RenderTabs(); RenderToolbar(); RenderCards(); ResetPosition();
     }
     public void SelectFolder(FavoriteFolder folder) => SelectView("folder", folder);
     private void RenderToolbar()
@@ -166,16 +166,25 @@ public sealed partial class MainWindow
     }
     private Control RenderItem(ClipItem item)
     {
-        Control control = _mode == "emoji" ? new Border { Width = 44, Height = 44, Child = new TextBlock { Text = item.Text, FontSize = 26, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center } }
+        Control control = _mode == "emoji" ? new Border { Width = 44, Height = 44, Background = Brushes.Transparent, Child = new TextBlock { Text = item.Text, FontSize = 26, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center } }
             : _mode == "history" || _folder?.Kind == FolderKind.Normal ? HistoryRow(item) : ImageTile(item);
         AttachItemActions(control, item); return control;
     }
     private Control HistoryRow(ClipItem item)
     {
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("22,*,Auto") };
+        // 透明背景让整行（不只是文字）都能响应右键菜单。
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("22,*,Auto"), Background = Brushes.Transparent };
         var index = Label((VisibleItems.ToList().IndexOf(item) + 1).ToString("D2"), 10, true); index.TextAlignment = TextAlignment.Right; row.Children.Add(index);
         var meta = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
-        if (item.IsPinned) meta.Children.Add(Label("📌", 11)); meta.Children.Add(Label(item.TimeLabel, 10.5, true));
+        if (item.IsPinned) meta.Children.Add(Label("📌", 11));
+        if (item.HasRichText)
+        {
+            var badge = new Border { Padding = new Thickness(4, 0), CornerRadius = new CornerRadius(3), BorderBrush = Divider, BorderThickness = new Thickness(1),
+                VerticalAlignment = VerticalAlignment.Center, Child = new TextBlock { Text = "格式", FontSize = 9.5, Foreground = Brush.Parse("#7A4F2B") } };
+            ToolTip.SetTip(badge, "带格式（列表编号、粗体等）。回车 / 单击保留格式粘贴，Shift+回车 / Shift+单击粘贴为纯文本");
+            meta.Children.Add(badge);
+        }
+        meta.Children.Add(Label(item.TimeLabel, 10.5, true));
         Grid.SetColumn(meta, 2); row.Children.Add(meta);
         Control content;
         if (item.Kind is ClipKind.Image or ClipKind.VideoSticker or ClipKind.VectorSticker)
@@ -210,7 +219,11 @@ public sealed partial class MainWindow
     private async void OnPanelKeyDown(object? sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape) { Hide(); e.Handled = true; }
-        else if (e.Key == Key.Enter && _items.SelectedItem is ClipItem item) { e.Handled = true; await CopyAsync(item, true); }
+        else if (e.Key == Key.Enter && (_items.SelectedItem ?? VisibleItems.FirstOrDefault()) is ClipItem item)
+        {
+            e.Handled = true;
+            await CopyAsync(item, true, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+        }
         else if (e.Key is Key.Down or Key.Up && (_search.IsKeyboardFocusWithin || _items.IsKeyboardFocusWithin) && _items.ItemCount > 0)
         {
             _items.SelectedIndex = Math.Clamp(_items.SelectedIndex + (e.Key == Key.Down ? 1 : -1), 0, _items.ItemCount - 1);

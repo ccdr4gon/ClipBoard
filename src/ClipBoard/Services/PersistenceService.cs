@@ -233,4 +233,23 @@ public class PersistenceService
     }
 
     public void DeleteGifBlob(string name) => DeleteImageBlob(name);
+
+    // HTML 动辄几百 KB，单独存文件，避免每次保存都重写进 data.json。
+    public string SaveRichBlob(RichContent rich)
+    {
+        var name = Guid.NewGuid().ToString("N") + ".rich.json";
+        File.WriteAllText(Path.Combine(_blobsDir, name), JsonSerializer.Serialize(rich));
+        return name;
+    }
+
+    public RichContent? LoadRichBlob(string? name)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            var full = GetBlobPath(name);
+            return File.Exists(full) ? JsonSerializer.Deserialize<RichContent>(File.ReadAllText(full)) : null;
+        }
+        catch { return null; }
+    }
 }

@@ -76,26 +76,38 @@ public partial class App : Application
     }
     public void ShowPanel()
     {
-        if (_window != null && Views.Dialogs.ActivateModal(_window)) return;
+        if (_window == null || Views.Dialogs.ActivateModal(_window)) return;
         if (!Preview && OperatingSystem.IsMacOS())
         {
             int pid = MacNative.ForegroundPid();
             if (pid > 0 && pid != Environment.ProcessId) PreviousApp = pid;
+            MacNative.UnhideApplication();
         }
-        _window?.Show(); _window?.Activate(); _window?.FocusSearch();
+        // 重新打开时清空搜索并回到第一条；已经显示（例如固定窗口）时只激活，不打断正在进行的搜索。
+        if (!_window.IsVisible) _window.ResetView();
+        _window.Show(); _window.Activate(); _window.FocusSearch();
     }
-    public async Task CopyAsync(Models.ClipItem item, bool paste)
+    // 界面预览和自动测试不碰系统剪贴板，只记录最后一次请求。
+    internal (Guid Item, bool Paste, bool PlainText)? LastPreviewCopy { get; private set; }
+    private bool _accessibilityPrompted;
+    public async Task CopyAsync(Models.ClipItem item, bool paste, bool plainText = false)
     {
-        if (Preview) { _window?.SetStatus("界面预览模式不读写系统剪贴板。"); return; }
-        if (!MacClipboard.Write(item, Persistence)) throw new IOException("剪贴板写入失败。");
+        if (Preview) { LastPreviewCopy = (item.Id, paste, plainText); _window?.SetStatus("界面预览模式不读写系统剪贴板。"); return; }
+        if (!MacClipboard.Write(item, Persistence, plainText)) throw new IOException("剪贴板写入失败。");
         _sequence = MacClipboard.Sequence;
-        if (!paste) { _window?.SetStatus("已复制。"); return; }
+        if (!paste) { _window?.SetStatus(plainText ? "已复制为纯文本。" : "已复制。"); return; }
+        _window?.SetStatus("");
         _window?.Hide();
-        if (!await MacNative.PasteAsync(PreviousApp))
+        // 无论能否自动粘贴都不再弹回面板：内容已在剪贴板，焦点已交还原应用，可直接按 ⌘V。原因留到下次打开面板时显示。
+        var result = await MacNative.PasteAsync(PreviousApp);
+        if (result == MacNative.PasteResult.NotTrusted)
         {
-            ShowPanel();
-            _window?.SetStatus("已复制。自动粘贴需要在系统设置 → 隐私与安全性 → 辅助功能中允许 ClipBoard；也可以切回原应用按 ⌘V。");
+            _window?.SetStatus("已复制，但没有自动粘贴：ClipBoard 还没有辅助功能权限。请到系统设置 → 隐私与安全性 → 辅助功能打开 ClipBoard；" +
+                "更新应用后开关虽显示已打开却无效时，先用“−”移除 ClipBoard，再重新添加。");
+            if (!_accessibilityPrompted) { _accessibilityPrompted = true; MacNative.RequestAccessibility(); }
         }
+        else if (result != MacNative.PasteResult.Pasted)
+            _window?.SetStatus("已复制，但没能切回原应用自动粘贴，请切回后按 ⌘V。");
     }
     public void Quit()
     {

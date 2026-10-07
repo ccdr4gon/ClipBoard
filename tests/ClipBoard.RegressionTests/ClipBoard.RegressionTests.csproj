@@ -14,5 +14,6 @@
     <Compile Include="../../src/ClipBoard/Services/FavoritesStore.cs" Link="Services/FavoritesStore.cs" />
     <Compile Include="../../src/ClipBoard/Services/GifHelper.cs" Link="Services/GifHelper.cs" />
     <Compile Include="../../src/ClipBoard/Services/ClipboardMonitor.cs" Link="Services/ClipboardMonitor.cs" />
+    <Compile Include="../../src/ClipBoard/Services/RichText.cs" Link="Services/RichText.cs" />
   </ItemGroup>
 </Project>

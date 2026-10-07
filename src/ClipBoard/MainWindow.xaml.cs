@@ -511,13 +511,13 @@ public partial class MainWindow : Window
             if (item == null) return;
             if (!_pinned) lb.SelectedItem = item;
             Log($"Click-Up pinned={_pinned} fg_before_paste={ForegroundHex()}");
-            PasteSelected(lb);
+            PasteSelected(lb, PlainTextModifier);
             Log($"Click-Up done fg_after_paste={ForegroundHex()}");
             ev.Handled = true;
         };
         lb.PreviewKeyDown += (_, ev) =>
         {
-            if (ev.Key == Key.Enter) { PasteSelected(lb); ev.Handled = true; }
+            if (ev.Key == Key.Enter) { PasteSelected(lb, PlainTextModifier); ev.Handled = true; }
         };
         lb.PreviewMouseRightButtonDown += (s, ev) =>
         {
@@ -531,6 +531,17 @@ public partial class MainWindow : Window
             if (lb.SelectedItem is not ClipItem item) { ev.Handled = true; return; }
             var menu = lb.ContextMenu;
             menu.Items.Clear();
+            if (item.HasRichText)
+            {
+                // 带格式的文本：两种粘贴方式都放在菜单最上面。
+                var rich = new MenuItem { Header = "粘贴（保留格式）", InputGestureText = "Enter" };
+                rich.Click += (_, _) => PasteSelected(lb);
+                var plain = new MenuItem { Header = "粘贴为纯文本", InputGestureText = "Shift+Enter" };
+                plain.Click += (_, _) => PasteSelected(lb, plainText: true);
+                menu.Items.Add(rich);
+                menu.Items.Add(plain);
+                menu.Items.Add(new Separator());
+            }
             PopulateItemContextMenu(menu, item, isHistoryTab, folder);
             _openContextMenu = menu;
             StartContextMenuAutoClose(menu);
@@ -574,6 +585,7 @@ public partial class MainWindow : Window
     private const int VK_LBUTTON = 0x01;
     private const int VK_RBUTTON = 0x02;
     private const int VK_MBUTTON = 0x04;
+    private const int VK_SHIFT = 0x10;
 
     private void PopulateItemContextMenu(ContextMenu menu, ClipItem item, bool isHistoryTab, FavoriteFolder? currentFolder)
     {
@@ -712,8 +724,11 @@ public partial class MainWindow : Window
         RebuildCombinedHistory();
     }
 
+    // 按住 Shift 点击或回车：只粘贴纯文本。读物理按键状态：固定窗口不激活，WPF 的 Keyboard.Modifiers 可能是旧值。
+    private static bool PlainTextModifier => (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+
     private DateTime _lastPasteUtc = DateTime.MinValue;
-    private void PasteSelected(ListBox lb)
+    private void PasteSelected(ListBox lb, bool plainText = false)
     {
         if (lb.SelectedItem is not ClipItem item) return;
         if ((DateTime.UtcNow - _lastPasteUtc).TotalMilliseconds < 150)
@@ -724,8 +739,8 @@ public partial class MainWindow : Window
         try
         {
         _lastPasteUtc = DateTime.UtcNow;
-        Log($"PasteSelected kind={item.Kind} pinned={_pinned} textLen={item.Text?.Length ?? 0}");
-        if (!App.History.CopyToClipboard(item))
+        Log($"PasteSelected kind={item.Kind} pinned={_pinned} plain={plainText} rich={item.HasRichText} textLen={item.Text?.Length ?? 0}");
+        if (!App.History.CopyToClipboard(item, plainText))
         {
             Log("PasteSelected cancelled: clipboard write failed or item unavailable");
             return;
@@ -752,25 +767,57 @@ public partial class MainWindow : Window
             if (_preClickForeground != IntPtr.Zero)
             {
                 var target = _preClickForeground;
-                var fg = GetForegroundWindow();
-                if (fg != target) SetForegroundWindow(target);
-                if (GetForegroundWindow() == target) SendPasteKeystroke();
-                Log($"Pinned paste: target={target.ToInt64():X} was_fg={(fg==target)} kind={item.Kind}");
+                Log($"Pinned paste: target={target.ToInt64():X} was_fg={(GetForegroundWindow() == target)} kind={item.Kind}");
+                PasteInto(target);
             }
             return;
         }
 
         HidePanel();
         var pasteTarget = _foregroundBeforeShow;
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            if (pasteTarget != IntPtr.Zero && GetForegroundWindow() != pasteTarget)
-                SetForegroundWindow(pasteTarget);
-            if (pasteTarget != IntPtr.Zero && GetForegroundWindow() == pasteTarget)
-                SendPasteKeystroke();
-        }), System.Windows.Threading.DispatcherPriority.Background);
+        Dispatcher.BeginInvoke(new Action(() => PasteInto(pasteTarget)), System.Windows.Threading.DispatcherPriority.Background);
         }
         catch (Exception ex) { Log("PasteSelected FAILED: " + ex.Message); }
+    }
+
+    private static void PasteInto(IntPtr target)
+    {
+        if (target == IntPtr.Zero) return;
+        // 焦点要在本程序仍持有前台权限时立即交还；等待 Shift 之后系统可能不再允许切换。
+        if (GetForegroundWindow() != target) SetForegroundWindow(target);
+        _ = SendPasteWhenShiftReleasedAsync(target);
+    }
+
+    // Shift+点击 / Shift+Enter 时用户可能还按着 Shift，目标程序会收到 Ctrl+Shift+V（VS Code 打开预览、Word 粘贴格式）。
+    // 等 Shift 松开再发送；合成 Shift 抬起会让中文输入法切换中英文，所以不那样做。
+    private static async Task SendPasteWhenShiftReleasedAsync(IntPtr target)
+    {
+        try
+        {
+            for (int i = 0; i < 100 && (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0; i++) await Task.Delay(15);
+            if (GetForegroundWindow() == target) SendPasteKeystroke();
+        }
+        catch (Exception ex) { Log("SendPaste FAILED: " + ex.Message); }
+    }
+
+    // 每次打开面板、改搜索词都从第一条开始：列表滚回顶部并选中第一条，回车即可粘贴最新内容。
+    private void ResetListPosition()
+    {
+        var lb = GetActiveListBox();
+        if (lb == null) return;
+        lb.SelectedIndex = lb.Items.Count > 0 ? 0 : -1;
+        FindScrollViewer(lb)?.ScrollToTop();
+    }
+
+    private static ScrollViewer? FindScrollViewer(DependencyObject root)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer viewer) return viewer;
+            if (FindScrollViewer(child) is { } nested) return nested;
+        }
+        return null;
     }
 
     public void ShowPanel()
@@ -803,6 +850,7 @@ public partial class MainWindow : Window
             if (prevFg != IntPtr.Zero && prevFg != myHwnd) _foregroundBeforeShow = prevFg;
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             Show();
+            ResetListPosition();
             Topmost = false;
             Topmost = true;
             if (!_pinned)
@@ -1153,7 +1201,7 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Enter)
         {
             var lb = GetActiveListBox();
-            if (lb != null) PasteSelected(lb);
+            if (lb != null) PasteSelected(lb, PlainTextModifier);
             e.Handled = true;
         }
     }
@@ -1191,6 +1239,7 @@ public partial class MainWindow : Window
                 };
             };
         }
+        ResetListPosition();
         UpdateEntryCount();
     }
 

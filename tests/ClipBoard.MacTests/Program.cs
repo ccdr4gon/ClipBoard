@@ -45,6 +45,8 @@ internal static class Program
                     ("GIF 预览、编辑与原件恢复", Animation),
                     ("跨平台数据重载保留贴纸发布信息", Reload),
                     ("Windows 风格历史布局、键盘选择和 Control+Command+V", PanelLayout),
+                    ("重新打开清空搜索、回到顶部；单击和回车直接粘贴，Shift 为纯文本", PanelReopenAndPaste),
+                    ("带格式文本重建编号、显示标记并提供纯文本粘贴", RichTextItems),
                     ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
@@ -168,6 +170,9 @@ internal static class Program
         var file = Path.Combine(Root, "file with 中文 spaces.txt"); File.WriteAllText(file, "native smoke");
         Check(MacClipboard.Write(new ClipItem { Kind = ClipKind.Files, FilePaths = [file] }, App.Persistence)
             && MacClipboard.Read()?.Files?.Single() == file, "原生文件 URL 读写失败");
+        var rich = new ClipItem { Kind = ClipKind.Text, Text = "1. 列表", RichBlobName = App.Persistence.SaveRichBlob(new RichContent("<ol><li>列表</li></ol>", null)) };
+        Check(MacClipboard.Write(rich, App.Persistence) && MacClipboard.Read() is { Text: "1. 列表", Rich.Html: { } html } && html.Contains("<li>列表</li>"), "原生 HTML 格式读写失败");
+        Check(MacClipboard.Write(rich, App.Persistence, plainText: true) && MacClipboard.Read() is { Text: "1. 列表", Rich: null }, "纯文本粘贴仍带格式");
         using var hotkey = new MacHotkey(() => { });
         var store = new TelegramConnectionStore(Root);
         store.Save(new("123456:local_test_only", 1234));
@@ -195,6 +200,69 @@ internal static class Program
         Check(list.Items.Count == 1, "图片标签混入文字");
         window.CaptureRenderedFrame()?.Save(Path.Combine(Repo, "out", "macos-images-preview.png"));
         window.SelectView("history");
+    }
+    private static async Task PanelReopenAndPaste()
+    {
+        var app = (App)App.Current!;
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)app.ApplicationLifetime!).MainWindow!;
+        for (int i = 0; i < 60; i++) App.History.Capture(new(Text: "滚动条目 " + i));
+        window.SelectView("history"); window.Hide(); app.ShowPanel();
+        await Task.Delay(100);
+        var list = window.GetVisualDescendants().OfType<ListBox>().Single();
+        var viewer = list.FindDescendantOfType<ScrollViewer>()!;
+        var search = window.GetVisualDescendants().OfType<TextBox>().Single(t => t.Name == "SearchBox");
+        search.Text = "滚动条目 59";
+        Check(list.ItemCount == 1 && list.SelectedIndex == 0, "搜索后没有选中第一条结果");
+        search.Text = "滚动条目";
+        list.SelectedIndex = 50; viewer.Offset = new Vector(0, 1500);
+        await Task.Delay(100);
+        Check(viewer.Offset.Y > 0, "测试未能把列表滚到下方");
+        window.Hide(); app.ShowPanel();
+        await Task.Delay(100);
+        Check(search.Text == "" && list.ItemCount > 60, "重新打开后搜索没有清空");
+        Check(viewer.Offset.Y == 0 && list.SelectedIndex == 0, "重新打开后没有回到顶部并选中第一条");
+
+        var first = (ClipItem)list.Items[0]!;
+        list.SelectedIndex = -1;
+        window.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None); window.KeyReleaseQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+        await Task.Delay(50);
+        Check(app.LastPreviewCopy == (first.Id, true, false), "没有选中时回车没有粘贴第一条");
+        window.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.Shift); window.KeyReleaseQwerty(PhysicalKey.Enter, RawInputModifiers.Shift);
+        await Task.Delay(50);
+        Check(app.LastPreviewCopy == (first.Id, true, true), "Shift+回车没有粘贴为纯文本");
+
+        var row = list.GetVisualDescendants().OfType<ListBoxItem>().ElementAt(2);
+        var target = (ClipItem)row.DataContext!;
+        // 先点行的内边距（不在卡片内容上），再按住 Shift 点行中间。
+        var padding = row.TranslatePoint(new Point(4, row.Bounds.Height / 2), window)!.Value;
+        var center = row.TranslatePoint(new Point(row.Bounds.Width / 2, row.Bounds.Height / 2), window)!.Value;
+        Check(window.InputHitTest(padding) is not Grid, "测试点没有落在行内边距上");
+        window.MouseDown(padding, MouseButton.Left); window.MouseUp(padding, MouseButton.Left);
+        await Task.Delay(50);
+        Check(app.LastPreviewCopy == (target.Id, true, false), "单击条目没有直接粘贴");
+        await Task.Delay(600); // 超过双击间隔，第二次按下才算单击
+        window.MouseDown(center, MouseButton.Left, RawInputModifiers.Shift); window.MouseUp(center, MouseButton.Left, RawInputModifiers.Shift);
+        await Task.Delay(50);
+        Check(app.LastPreviewCopy == (target.Id, true, true), "Shift+单击没有粘贴为纯文本");
+        foreach (var item in App.History.Items.Where(i => i.Text?.StartsWith("滚动条目") == true).ToArray()) App.History.Remove(item);
+    }
+    private static async Task RichTextItems()
+    {
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)App.Current!.ApplicationLifetime!).MainWindow!;
+        const string html = "<meta charset='utf-8'><p>步骤：</p><ol><li>打开面板</li><li>按 <b>回车</b></li></ol>";
+        App.History.Capture(new(Text: "步骤：\n\n打开面板\n按 回车", Rich: RichText.Create(html, null)));
+        var item = App.History.Items[0];
+        Check(item.Text == "步骤：\n\n1. 打开面板\n2. 按 回车" && item.HasRichText, "Mac 没有从 HTML 重建编号或没有保存格式：" + item.Text);
+        Check(App.Persistence.LoadRichBlob(item.RichBlobName)?.Html == html, "Mac 格式文件内容不对");
+        window.SelectView("history"); window.Show();
+        await Task.Delay(100);
+        var list = window.GetVisualDescendants().OfType<ListBox>().Single();
+        var row = list.GetVisualDescendants().OfType<ListBoxItem>().First(r => r.DataContext == item);
+        Check(row.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "格式"), "带格式条目没有显示标记");
+        var menu = row.GetVisualDescendants().OfType<Control>().Select(c => c.ContextMenu).First(m => m != null)!;
+        Check(menu.Items.OfType<MenuItem>().Any(m => m.Header as string == "粘贴为纯文本"), "右键菜单缺少纯文本粘贴");
+        App.History.Remove(item);
+        Check(!File.Exists(App.Persistence.GetBlobPath(item.RichBlobName!)), "删除条目后格式文件未清理");
     }
     private static async Task SettingsDialogs(bool native)
     {

@@ -201,14 +201,15 @@ public class FavoritesStore
         var remaining = PinnedHistory.Concat(Folders.SelectMany(f => f.Items))
             .Concat(_history?.Items ?? Enumerable.Empty<ClipItem>()).ToArray();
         // 包括原件和修改版；原件仍被其他收藏引用时不可清理。
-        foreach (var name in new[] { item.ImageBlobName, item.GifBlobName, item.Sticker?.OriginalBlobName, item.Sticker?.WorkingBlobName }
-                     .Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var name in BlobNames(item).Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            if (!remaining.Any(i => new[] { i.ImageBlobName, i.GifBlobName, i.Sticker?.OriginalBlobName, i.Sticker?.WorkingBlobName }
-                    .Contains(name, StringComparer.OrdinalIgnoreCase)))
+            if (!remaining.Any(i => BlobNames(i).Contains(name, StringComparer.OrdinalIgnoreCase)))
                 _persistence.DeleteImageBlob(name!);
         }
     }
+
+    private static string?[] BlobNames(ClipItem item)
+        => [item.ImageBlobName, item.GifBlobName, item.RichBlobName, item.Sticker?.OriginalBlobName, item.Sticker?.WorkingBlobName];
 
     public void MoveFavorite(ClipItem item, FavoriteFolder target)
     {
@@ -247,6 +248,7 @@ public class FavoritesStore
         Text = src.Text,
         ImageBlobName = src.ImageBlobName,
         GifBlobName = src.GifBlobName,
+        RichBlobName = src.RichBlobName,
         FilePaths = src.FilePaths?.ToArray(),
         Timestamp = src.Timestamp,
         IsPinned = src.IsPinned,

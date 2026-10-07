@@ -45,6 +45,12 @@ internal static class Program
             ("慢 GIF 后的文本按捕获顺序交付", ClipboardDeliveryOrder),
             ("退出时保存下载队列里的静态图和文本", ClipboardQueueOnExit),
             ("顶置条目的使用顺序在重启后保留", PinnedOrderRoundTrip),
+            ("网页复制的列表从 HTML 重建编号和缩进", ListNumbersFromHtml),
+            ("原纯文本已有编号或没有列表时保持原样", PlainTextKeptWhenComplete),
+            ("HTML Format 偏移量按 UTF-8 字节计算并可读回", CfHtmlRoundTrip),
+            ("保留格式写入 HTML 和 RTF，纯文本只写文字", RichDataObjectFormats),
+            ("格式文件随条目保存、共享和清理", RichBlobLifecycle),
+            ("同一文字再次复制带上格式时补到原条目", RichAddedToExistingText),
         ];
         int failures = 0;
         foreach (var (name, test) in tests)
@@ -276,6 +282,111 @@ internal static class Program
         var restored = new FavoritesStore(f.Persistence, f.Persistence.Load());
         Check(restored.PinnedHistory[0].Text == "较早顶置", "恢复时按创建时间覆盖了保存的排序");
     }
+
+    // 与 Chromium / Electron（Claude、ChatGPT）复制选区时的 HTML 结构一致：编号只在 HTML 里。
+    private const string ChatHtml = "<html><body><!--StartFragment--><p>需要修复：</p><ol><li><p><strong>macOS</strong> 粘贴失败</p>"
+        + "<ul><li>回车没反应</li><li>要 <code>双击</code> 才行</li></ul></li><li>搜索&nbsp;不清空</li></ol>"
+        + "<p>完成。</p><pre><code>dotnet run\n  --project x\n</code></pre><!--EndFragment--></body></html>";
+    private const string ChatPlain = "需要修复：\r\n\r\nmacOS 粘贴失败\r\n回车没反应\r\n要 双击 才行\r\n搜索 不清空\r\n\r\n完成。\r\n\r\ndotnet run\r\n  --project x";
+
+    private static void ListNumbersFromHtml()
+    {
+        const string expected = "需要修复：\n\n1. macOS 粘贴失败\n   - 回车没反应\n   - 要 双击 才行\n2. 搜索 不清空\n\n完成。\n\ndotnet run\n  --project x";
+        string converted = RichText.HtmlToText(ChatHtml);
+        Check(converted == expected, "HTML 转纯文本结果不对：\n" + converted);
+        Check(RichText.PlainText(ChatPlain, ChatHtml) == expected.Replace("\n", "\r\n"), "没有用重建的编号替换缺编号的纯文本，或换行风格不一致");
+        Check(RichText.HtmlToText("<ol start=\"3\"><li>三</li><li value=\"9\">九</li><li>十</li></ol>") == "3. 三\n9. 九\n10. 十", "start / value 编号不对");
+    }
+
+    private static void PlainTextKeptWhenComplete()
+    {
+        const string markdown = "需要修复：\n\n1. **macOS** 粘贴失败\n   - 回车没反应";
+        Check(RichText.PlainText(markdown, ChatHtml) == markdown, "原文已有编号时被改写");
+        Check(RichText.PlainText("普通段落", "<p><b>普通</b>段落</p>") == "普通段落", "没有列表时不应改写纯文本");
+        Check(RichText.PlainText("很长的一段原文内容，HTML 只截到一部分", "<ul><li>一</li></ul>") == "很长的一段原文内容，HTML 只截到一部分", "HTML 内容不全时不应替换原文");
+    }
+
+    private static void CfHtmlRoundTrip()
+    {
+        const string fragment = "<ol><li>中文 ✓ 列表</li></ol>";
+        string cf = RichText.ToCfHtml(fragment);
+        string? html = RichText.FromCfHtml(cf);
+        Check(html != null && RichText.HtmlToText(html) == "1. 中文 ✓ 列表", "HTML Format 读回后内容不对");
+        Check(RichText.FromCfHtml("Version:0.9\r\nStartHTML:999\r\nEndHTML:1000\r\n<p>偏移错误</p>") == "<p>偏移错误</p>", "偏移量错误时没有退回到第一个标签");
+        // 生成实际写入剪贴板的数据对象，通过 COM 读取原始字节，确认 WPF 按 UTF-8 写入且偏移量对得上。
+        byte[] bytes = ReadHGlobal(HistoryStore.CreateTextData("x", new RichContent(fragment, null)), System.Windows.DataFormats.Html);
+        string header = Encoding.ASCII.GetString(bytes, 0, Math.Min(200, bytes.Length));
+        int Offset(string key) => int.Parse(System.Text.RegularExpressions.Regex.Match(header, key + @":(\d+)").Groups[1].Value);
+        Check(bytes[Offset("StartHTML")] == (byte)'<' && Offset("EndHTML") == bytes.Length, "HTML 起止偏移不对");
+        Check(Encoding.UTF8.GetString(bytes, Offset("StartFragment"), Offset("EndFragment") - Offset("StartFragment")) == fragment, "片段偏移不对");
+    }
+
+    private static void RichDataObjectFormats()
+    {
+        var rich = HistoryStore.CreateTextData("文字", new RichContent("<b>文字</b>", "{\\rtf1 文字}"));
+        Check(rich.GetDataPresent(System.Windows.DataFormats.Html) && rich.GetDataPresent(System.Windows.DataFormats.Rtf) && (string)rich.GetData(System.Windows.DataFormats.UnicodeText) == "文字", "保留格式时缺少格式");
+        var plain = HistoryStore.CreateTextData("文字", null);
+        Check(!plain.GetDataPresent(System.Windows.DataFormats.Html) && !plain.GetDataPresent(System.Windows.DataFormats.Rtf) && (string)plain.GetData(System.Windows.DataFormats.UnicodeText) == "文字", "纯文本仍带格式");
+    }
+
+    private static void RichBlobLifecycle()
+    {
+        using var f = new Fixture();
+        f.History.AddText(ChatPlain, RichText.Create(ChatHtml, null));
+        var item = f.History.Items.Single();
+        Check(item.HasRichText && item.Text!.Contains("1. macOS"), "没有保存格式或没有重建编号");
+        Check(f.Persistence.LoadRichBlob(item.RichBlobName)?.Html == ChatHtml, "格式文件内容不对");
+        var folder = f.Favorites.CreateFolder("收藏");
+        f.Favorites.AddToFolder(item, folder);
+        f.Favorites.PinHistory(item, f.History);
+        f.Persistence.FlushSync();
+        var data = f.Persistence.Load();
+        Check(data.PinnedHistory.Single().RichBlobName == item.RichBlobName && data.Favorites.Single().RichBlobName == item.RichBlobName, "重启后丢失格式");
+        f.Favorites.RemovePinnedHistory(f.Favorites.PinnedHistory.Single());
+        Check(f.Persistence.LoadRichBlob(item.RichBlobName) != null, "仍被收藏引用的格式文件被删除");
+        f.Favorites.RemoveFavorite(folder.Items.Single());
+        Check(!File.Exists(Path.Combine(f.Persistence.BlobsDir, item.RichBlobName!)), "最后一条引用删除后格式文件未清理");
+    }
+
+    private static void RichAddedToExistingText()
+    {
+        using var f = new Fixture();
+        f.History.AddText("同一段文字");
+        f.History.AddText("同一段文字", RichText.Create("<p>同一段<b>文字</b></p>", null));
+        Check(f.History.Items.Count == 1 && f.History.Items[0].HasRichText, "格式没有补到原条目");
+        Check(RichText.Create("纯文本", "不是 RTF") == null, "无效格式被保存");
+    }
+
+    private static byte[] ReadHGlobal(System.Windows.DataObject data, string format)
+    {
+        var com = (System.Runtime.InteropServices.ComTypes.IDataObject)data;
+        var request = new System.Runtime.InteropServices.ComTypes.FORMATETC
+        {
+            cfFormat = unchecked((short)System.Windows.DataFormats.GetDataFormat(format).Id),
+            dwAspect = System.Runtime.InteropServices.ComTypes.DVASPECT.DVASPECT_CONTENT,
+            lindex = -1,
+            tymed = System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL,
+        };
+        com.GetData(ref request, out var medium);
+        try
+        {
+            IntPtr pointer = GlobalLock(medium.unionmember);
+            try
+            {
+                var bytes = new byte[(int)GlobalSize(medium.unionmember)];
+                System.Runtime.InteropServices.Marshal.Copy(pointer, bytes, 0, bytes.Length);
+                int end = Array.IndexOf(bytes, (byte)0);
+                return end < 0 ? bytes : bytes[..end];
+            }
+            finally { GlobalUnlock(medium.unionmember); }
+        }
+        finally { ReleaseStgMedium(ref medium); }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern IntPtr GlobalLock(IntPtr handle);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern bool GlobalUnlock(IntPtr handle);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern UIntPtr GlobalSize(IntPtr handle);
+    [System.Runtime.InteropServices.DllImport("ole32.dll")] private static extern void ReleaseStgMedium(ref System.Runtime.InteropServices.ComTypes.STGMEDIUM medium);
 
     private static ClipboardMonitor MonitorWithoutSystemListener()
     {

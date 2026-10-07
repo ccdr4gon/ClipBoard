@@ -23,6 +23,17 @@ public class ClipItem : INotifyPropertyChanged
     public StickerAsset? Sticker { get; set; }
     public DateTime Timestamp { get; set; } = DateTime.Now;
 
+    // 文本复制时一起带来的 HTML / RTF，存在 blob 文件里，粘贴时按需读取。
+    private string? _richBlobName;
+    public string? RichBlobName
+    {
+        get => _richBlobName;
+        set { if (_richBlobName != value) { _richBlobName = value; OnChanged(); OnChanged(nameof(HasRichText)); OnChanged(nameof(RichVisibility)); } }
+    }
+
+    [JsonIgnore]
+    public bool HasRichText => Kind == ClipKind.Text && !string.IsNullOrEmpty(_richBlobName);
+
     // 原始图片像素尺寸（持久化）。内存中的 Image 只是缩略图，故尺寸标签用这两个值。
     public int PixelW { get; set; }
     public int PixelH { get; set; }
@@ -161,6 +172,7 @@ public class ClipItem : INotifyPropertyChanged
     [JsonIgnore] public bool GifVisibility => Kind == ClipKind.Gif;
     [JsonIgnore] public bool FilesVisibility => Kind == ClipKind.Files;
     [JsonIgnore] public bool PinVisibility => IsPinned;
+    [JsonIgnore] public bool RichVisibility => HasRichText;
 #else
     [JsonIgnore]
     public System.Windows.Visibility TextVisibility =>
@@ -182,6 +194,10 @@ public class ClipItem : INotifyPropertyChanged
     [JsonIgnore]
     public System.Windows.Visibility PinVisibility =>
         IsPinned ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+
+    [JsonIgnore]
+    public System.Windows.Visibility RichVisibility =>
+        HasRichText ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
 #endif
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -212,6 +228,7 @@ public class ClipItem : INotifyPropertyChanged
         Text = Text,
         ImageBlobName = ImageBlobName,
         GifBlobName = GifBlobName,
+        RichBlobName = RichBlobName,
         FilePaths = FilePaths?.ToArray(),
         Sticker = Sticker?.Clone(),
         Timestamp = Timestamp,
