@@ -307,12 +307,14 @@ public partial class App : Application
             if (_trayIcon.IsTaskbarIconCreated)
             {
                 DiagLog.Write("tray", $"icon already registered at +{DiagLog.ElapsedMs}ms, skip re-assert");
+                ApplyNativeTrayTip();
                 return;
             }
             CloseTrayPopups();
             _trayIcon.Visibility = Visibility.Collapsed;
             _trayIcon.Visibility = Visibility.Visible;
             DiagLog.Write("tray", $"icon visibility re-asserted at +{DiagLog.ElapsedMs}ms (created={_trayIcon.IsTaskbarIconCreated})");
+            ApplyNativeTrayTip();
         }
 
         foreach (var seconds in new[] { 3, 10, 30 })
@@ -370,9 +372,64 @@ public partial class App : Application
             {
                 _tipOpenSince = DateTime.MinValue;
             }
+            // explorer 重启后 Hardcodet 会重新添加图标，不带系统 tooltip；顺带补上（只修改提示，不重建图标）。
+            ApplyNativeTrayTip(log: false);
         };
         _tipWatchdog.Start();
     }
+
+    // 悬停显示名称用系统自带的 tooltip（NIF_SHOWTIP），由 shell 自己显示和关闭，不会像 Hardcodet 的
+    // WPF tooltip 那样因收不到 NIN_POPUPCLOSE 而变成孤儿贴条。Hardcodet 不暴露这个选项，
+    // 所以取它内部的窗口句柄和图标 ID，自己发一次 NIM_MODIFY；ToolTipText 仍保持不设置。
+    private const string TrayTipText = "ClipBoard — Ctrl+Alt+V";
+    private void ApplyNativeTrayTip(bool log = true)
+    {
+        try
+        {
+            if (_trayIcon is not { IsTaskbarIconCreated: true }) return;
+            var field = typeof(TaskbarIcon).GetField("iconData", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var iconData = field?.GetValue(_trayIcon);
+            if (iconData is null) { if (log) DiagLog.Write("tray", "native tooltip skipped: iconData not found"); return; }
+            var type = iconData.GetType();
+            var data = new NotifyIconDataW
+            {
+                cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NotifyIconDataW>(),
+                hWnd = (IntPtr)type.GetField("WindowHandle")!.GetValue(iconData)!,
+                uID = (uint)type.GetField("TaskbarIconId")!.GetValue(iconData)!,
+                uFlags = NifTip | NifShowTip,
+                szTip = TrayTipText,
+            };
+            bool ok = Shell_NotifyIconW(NimModify, ref data);
+            if (log) DiagLog.Write("tray", $"native tooltip set: {ok}");
+        }
+        catch (Exception ex) when (ex is System.Reflection.TargetException or InvalidCastException or NullReferenceException)
+        {
+            if (log) DiagLog.Write("tray", "native tooltip failed: " + ex.Message);
+        }
+    }
+
+    private const uint NimModify = 0x1, NifTip = 0x4, NifShowTip = 0x80;
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private struct NotifyIconDataW
+    {
+        public uint cbSize;
+        public IntPtr hWnd;
+        public uint uID;
+        public uint uFlags;
+        public uint uCallbackMessage;
+        public IntPtr hIcon;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+        public uint dwState;
+        public uint dwStateMask;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+        public uint uVersion;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+        public uint dwInfoFlags;
+        public Guid guidItem;
+        public IntPtr hBalloonIcon;
+    }
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern bool Shell_NotifyIconW(uint message, ref NotifyIconDataW data);
 
     private static void LogCrash(string source, Exception ex)
     {

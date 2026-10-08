@@ -13,7 +13,8 @@
 
             <!-- 不设 ToolTipText：Hardcodet 的自定义 WPF tooltip 只靠 shell 的 NIN_POPUPCLOSE 关闭，
                  而本机 shell 会在鼠标从未悬停的情况下发出 NIN_POPUPOPEN（疑似被图标重建刺激），
-                 导致「ClipBoard — Ctrl+Alt+V」贴条无故出现且永不消失。没有 tooltip 对象就没有这个问题。 -->
+                 导致「ClipBoard — Ctrl+Alt+V」贴条无故出现且永不消失。没有 tooltip 对象就没有这个问题。
+                 悬停名称改用系统自带 tooltip，见 App.xaml.cs 的 ApplyNativeTrayTip。 -->
             <tb:TaskbarIcon x:Key="TrayIcon"
                             IconSource="/Assets/tray.ico"
                             PreviewTrayContextMenuOpen="Tray_PreviewContextMenuOpen"

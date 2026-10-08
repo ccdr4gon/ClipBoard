@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <AssemblyName>ClipBoard.Mac</AssemblyName>
-    <Version>2.0.0</Version>
+    <Version>2.0.1</Version>
     <RootNamespace>ClipBoard</RootNamespace>
     <DefineConstants>$(DefineConstants);AVALONIA</DefineConstants>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>

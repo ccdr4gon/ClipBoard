@@ -35,7 +35,7 @@ Windows 上生成的包尚未经过 Mac 签名检查，也没有 Apple 公证，
 
 ```sh
 python3 scripts/package-macos.py --arch arm64 --sign 'Developer ID Application: Your Name (TEAMID)'
-xcrun notarytool submit dist/macos-arm64/ClipBoard-2.0.0-macos-arm64.zip --keychain-profile YOUR_PROFILE --wait
+xcrun notarytool submit dist/macos-arm64/ClipBoard-2.0.1-macos-arm64.zip --keychain-profile YOUR_PROFILE --wait
 xcrun stapler staple dist/macos-arm64/ClipBoard.app
 ```
 
