@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- macOS app icon: the 824px plate of Apple's icon grid is the clipboard board itself. -->
+  <defs>
+    <linearGradient id="board" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#A3713F"/>
+      <stop offset="1" stop-color="#694121"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.20"/>
+      <stop offset="0.42" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFEF9"/>
+      <stop offset="1" stop-color="#F4EDE0"/>
+    </linearGradient>
+    <linearGradient id="clip" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4C4137"/>
+      <stop offset="1" stop-color="#211A14"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feOffset in="SourceAlpha" dy="14" result="offset"/>
+      <feGaussianBlur in="offset" stdDeviation="16" result="blur"/>
+      <feFlood flood-color="#2A1709" flood-opacity="0.38"/>
+      <feComposite in2="blur" operator="in" result="shade"/>
+      <feMerge><feMergeNode in="shade"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#board)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#sheen)"/>
+  <g filter="url(#shadow)">
+    <!-- an earlier entry peeking out behind the current one -->
+    <rect x="238" y="272" width="548" height="584" rx="22" fill="#E6D7BE" transform="rotate(-5 512 564)"/>
+    <rect x="238" y="262" width="548" height="590" rx="22" fill="url(#paper)"/>
+  </g>
+  <rect x="300" y="392" width="250" height="44" rx="22" fill="#2C2418"/>
+  <circle cx="318" cy="504" r="19" fill="#7A4F2B"/>
+  <rect x="362" y="488" width="362" height="32" rx="16" fill="#D8C8AF"/>
+  <circle cx="318" cy="592" r="19" fill="#7A4F2B"/>
+  <rect x="362" y="576" width="300" height="32" rx="16" fill="#D8C8AF"/>
+  <circle cx="318" cy="680" r="19" fill="#7A4F2B"/>
+  <rect x="362" y="664" width="340" height="32" rx="16" fill="#D8C8AF"/>
+  <rect x="300" y="752" width="200" height="32" rx="16" fill="#E5D9C5"/>
+  <g filter="url(#shadow)">
+    <path fill="url(#clip)" fill-rule="evenodd" d="M446 214 A66 66 0 0 1 578 214 V276 H446 Z M536 196 A24 24 0 1 0 488 196 A24 24 0 1 0 536 196 Z"/>
+    <rect x="388" y="226" width="248" height="104" rx="34" fill="url(#clip)"/>
+  </g>
+  <rect x="410" y="240" width="204" height="10" rx="5" fill="#FFFFFF" fill-opacity="0.14"/>
+</svg>

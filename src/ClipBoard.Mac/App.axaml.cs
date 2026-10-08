@@ -52,8 +52,9 @@ public partial class App : Application
                 var show = new NativeMenuItem("显示面板  ⌃⌘V"); show.Click += (_, _) => ShowPanel();
                 var quit = new NativeMenuItem("退出 ClipBoard"); quit.Click += (_, _) => Quit();
                 menu.Items.Add(show); menu.Items.Add(new NativeMenuItemSeparator()); menu.Items.Add(quit);
-                using var icon = AssetLoader.Open(new Uri("avares://ClipBoard.Mac/Assets/tray.ico"));
+                using var icon = AssetLoader.Open(new Uri("avares://ClipBoard.Mac/Assets/menubar.png"));
                 _tray = new TrayIcon { Icon = new WindowIcon(icon), ToolTipText = "ClipBoard", Menu = menu, IsVisible = true };
+                MacOSProperties.SetIsTemplateIcon(_tray, true); // 模板图：深色菜单栏显示为白色，浅色菜单栏显示为黑色
                 TrayIcon.SetIcons(this, new TrayIcons { _tray });
             }
             desktop.Exit += (_, _) => { Favorites.Save(); Persistence.FlushSync(); _poll?.Stop(); _hotkey?.Dispose(); _tray?.Dispose(); };

@@ -1,14 +1,16 @@
 <div align="center">
 
-# 📋 ClipBoard
+<img src="assets/icons/app-256.png" width="128" alt="ClipBoard 图标">
+
+# ClipBoard
 
 **Windows 托盘 / macOS 菜单栏剪贴板管理器**
 
-文本 · 图片 · GIF · 文件 历史 ｜ 收藏夹 ｜ 表情包 ｜ Emoji ｜ 全局热键
+文本 · 图片 · GIF · 文件 历史 ｜ 保留格式粘贴 ｜ 收藏夹 ｜ 表情包 ｜ Emoji ｜ 全局热键
 
 [![Release](https://img.shields.io/github/v/release/ccdr4gon/ClipBoard?style=flat-square)](https://github.com/ccdr4gon/ClipBoard/releases/latest)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?style=flat-square)](https://github.com/ccdr4gon/ClipBoard/releases/latest)
-[![.NET](https://img.shields.io/badge/.NET-8.0%20WPF-512BD4?style=flat-square)](https://dotnet.microsoft.com/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%7C%20macOS%2013%2B-0078D6?style=flat-square)](https://github.com/ccdr4gon/ClipBoard/releases/latest)
+[![.NET](https://img.shields.io/badge/.NET-8.0%20WPF%20%2F%20Avalonia-512BD4?style=flat-square)](https://dotnet.microsoft.com/)
 
 ![预览](docs/preview.png)
 
@@ -16,6 +18,7 @@
 
 ## ✨ 特性
 
+- 🍎 **macOS 支持（2.0 新增）** — Apple Silicon / Intel 原生菜单栏应用，`⌃⌘V` 唤出，与 Windows 版共用历史、收藏、表情包和 Telegram 贴纸功能；数据可在两个平台间迁移。
 - 📋 **多类型历史** — 自动记录文本、图片、GIF、文件；最多保留 200 条，自动去重相邻重复项。
 - 🗂️ **智能分页** — 历史 / 图片 / Emoji / 表情包，以及你自定义的收藏夹。
 - 📝 **保留格式** — 从网页、聊天（如 Claude、ChatGPT）、Word 复制的文字会同时记下 HTML / RTF，条目旁显示「格式」。回车粘贴保留列表编号和粗体，`Shift` + 回车粘贴纯文本；网页纯文本缺少的列表编号会从 HTML 补回。
@@ -33,7 +36,7 @@
 
 | 操作 | 说明 |
 | --- | --- |
-| `Ctrl` + `Alt` + `V` | 唤出剪贴板面板 |
+| `Ctrl` + `Alt` + `V`（macOS：`⌃⌘V`） | 唤出剪贴板面板 |
 | `↑` / `↓` | 选择条目（打开面板时自动选中第一条） |
 | `Enter` / 单击 | 粘贴选中条目，保留原格式 |
 | `Shift` + `Enter` / `Shift` + 单击 | 粘贴为纯文本 |
@@ -43,29 +46,25 @@
 
 ## 📦 安装
 
+在 [**最新 Release**](https://github.com/ccdr4gon/ClipBoard/releases/latest) 下载对应平台的文件，均自带 .NET 运行时，无需另装。
+
+### Windows
+
+`ClipBoard-v2.0.0-win-x64.exe` — **自包含单文件**，双击即用。建议放到 `%LOCALAPPDATA%\Programs\ClipBoard\ClipBoard.exe`；首次运行会自动注册开机启动（可在设置里关闭）。
+
 ### macOS
 
-提供 Apple Silicon 和 Intel 两种构建，要求 macOS 13+。保留标签页和卡片布局，支持历史缩略图、收藏、Telegram 贴纸导入、GIF 编辑和发布更新。
+要求 macOS 13+。M 系列下载 `ClipBoard-2.0.0-macos-arm64.zip`，Intel 下载 `ClipBoard-2.0.0-macos-x64.zip`。
 
-在 [v1.2.2 Release](https://github.com/ccdr4gon/ClipBoard/releases/tag/v1.2.2) 下载 `ClipBoard-1.2.2-macos-arm64.zip`（M 系列）或 `ClipBoard-1.2.2-macos-x64.zip`（Intel），用访达拖入“应用程序”（更新时选“替换”）。单击或回车即可粘贴并保留原格式；修复 macOS 27 上自动粘贴不生效的问题。
+1. 双击 ZIP 解压，用访达把 `ClipBoard.app` 拖入“应用程序”；更新时选“替换”。不要直接在“下载”里运行，反复解压会生成 `ClipBoard 2.app`… 多个副本，授权会对不上。
+2. 首次打开若提示无法验证开发者，到“系统设置 → 隐私与安全性”点“仍要打开”。
+3. 自动粘贴需要在“隐私与安全性 → 辅助功能”（macOS 27 起叫“设备控制与数据访问”）允许 ClipBoard。应用使用临时签名，每次更新后要移除旧条目再重新授权。
 
-```sh
-python3 scripts/package-macos.py --arch arm64  # M 系列 Mac
-python3 scripts/package-macos.py --arch x64    # Intel Mac
-```
-
-应用输出到 `dist/macos-对应架构/`；动画处理需 `brew install ffmpeg`。
-快捷键为 `⌃⌘V`。安装、权限、签名、数据迁移和功能范围见 [macOS 使用说明](docs/macos.md)。
-
-### 下载（推荐）
-
-Windows 安装包见 [**v1.2.0 Release**](https://github.com/ccdr4gon/ClipBoard/releases/tag/v1.2.0) 中的 `ClipBoard-v1.2.0-win-x64.exe`；Mac 最新版见上面的 v1.2.2。
-
-> **自包含单文件，无需安装 .NET 运行时**，双击即用。首次运行会自动注册开机启动（可在设置里关闭）。
+快捷键为 `⌃⌘V`；动画处理需 `brew install ffmpeg`。安装、权限、签名、数据迁移和功能范围见 [macOS 使用说明](docs/macos.md)。
 
 ### 从源码构建
 
-需要 [.NET 8 SDK](https://dotnet.microsoft.com/download)（Windows）。
+需要 [.NET 8 SDK](https://dotnet.microsoft.com/download)。Windows：
 
 ```bash
 # 克隆
@@ -80,6 +79,15 @@ dotnet publish src/ClipBoard/ClipBoard.csproj -c Release -r win-x64 `
   --self-contained true -p:PublishSingleFile=true `
   -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
 ```
+
+macOS（在 Mac 上构建会自动签名并检查）：
+
+```sh
+python3 scripts/package-macos.py --arch arm64  # M 系列 Mac，输出到 dist/macos-arm64/
+python3 scripts/package-macos.py --arch x64    # Intel Mac
+```
+
+图标源文件在 `assets/icons/*.svg`，修改后运行 `dotnet run --project tools/IconGen` 重新生成 Windows `.ico`、macOS `.icns` 和菜单栏图标。
 
 ## Telegram 表情包管理
 
@@ -105,7 +113,7 @@ dotnet publish src/ClipBoard/ClipBoard.csproj -c Release -r win-x64 `
 
 ## 🛠️ 技术栈
 
-- **.NET 8 · WPF**
+- **.NET 8 · WPF**（Windows）/ **[Avalonia](https://avaloniaui.net/)**（macOS）
 - [Hardcodet.NotifyIcon.Wpf](https://github.com/hardcodet/wpf-notifyicon) — 托盘图标
 - [Emoji.Wpf](https://github.com/samhocevar/emoji.wpf) — Emoji 渲染
 - [SkiaSharp](https://github.com/mono/SkiaSharp) — WebP 编码

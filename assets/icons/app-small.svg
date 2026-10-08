@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- Windows 16-32px and tray: the same clipboard, simplified and aligned to the 16px pixel grid. -->
+  <defs>
+    <linearGradient id="board" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9A693B"/>
+      <stop offset="1" stop-color="#6A4222"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="24" height="26" rx="4" fill="url(#board)"/>
+  <rect x="8" y="8" width="16" height="18" rx="1" fill="#FFFEF9"/>
+  <rect x="10" y="14" width="12" height="2" fill="#7A4F2B"/>
+  <rect x="10" y="18" width="12" height="2" fill="#A88B6C"/>
+  <rect x="10" y="22" width="8" height="2" fill="#A88B6C"/>
+  <rect x="10" y="2" width="12" height="8" rx="2" fill="#2C2418"/>
+</svg>

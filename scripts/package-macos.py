@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", choices=["arm64", "x64"], default="arm64")
-    parser.add_argument("--version", default="1.2.2")
+    parser.add_argument("--version", default="2.0.0")
     parser.add_argument("--sign", default="-", help="On macOS: Developer ID identity or '-' for local ad-hoc signing")
     args = parser.parse_args()
     output = ROOT / "dist" / f"macos-{args.arch}"
@@ -37,12 +37,15 @@ def main():
                     "-p:IncludeNativeLibrariesForSelfExtract=false", "-o", str(binary)], check=True)
     info = {
         "CFBundleName": "ClipBoard", "CFBundleDisplayName": "ClipBoard",
-        "CFBundleExecutable": "ClipBoard.Mac", "CFBundleIdentifier": "io.github.ccdr4gon.clipboard",
+        "CFBundleExecutable": "ClipBoard.Mac", "CFBundleIconFile": "ClipBoard", "CFBundleIdentifier": "io.github.ccdr4gon.clipboard",
         "CFBundlePackageType": "APPL", "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleShortVersionString": args.version, "CFBundleVersion": args.version,
         "LSMinimumSystemVersion": "13.0", "LSUIElement": True, "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
     }
+    resources = bundle / "Contents" / "Resources"
+    resources.mkdir()
+    shutil.copy2(ROOT / "src/ClipBoard.Mac/Assets/ClipBoard.icns", resources / "ClipBoard.icns")
     with (bundle / "Contents/Info.plist").open("wb") as f:
         plistlib.dump(info, f)
     for file in binary.rglob("*"):

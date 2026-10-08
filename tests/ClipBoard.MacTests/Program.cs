@@ -104,7 +104,7 @@ internal static class Program
         server.Seed("MacTestPack", (Png(2), "static"), (Tgs(), "animated"));
         var remote = await client.GetSetAsync("MacTestPack", default);
         var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)App.Current!.ApplicationLifetime!).MainWindow!;
-        using (var icon = Avalonia.Platform.AssetLoader.Open(new Uri("avares://ClipBoard.Mac/Assets/tray.ico")))
+        using (var icon = Avalonia.Platform.AssetLoader.Open(new Uri("avares://ClipBoard.Mac/Assets/menubar.png")))
             Check(new Avalonia.Controls.WindowIcon(icon) != null, "菜单栏图标未正确打包");
         window.Show();
         int count = App.Favorites.Folders.Count;

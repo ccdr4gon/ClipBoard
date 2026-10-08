@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <AssemblyName>ClipBoard.Mac</AssemblyName>
+    <Version>2.0.0</Version>
     <RootNamespace>ClipBoard</RootNamespace>
     <DefineConstants>$(DefineConstants);AVALONIA</DefineConstants>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
@@ -16,7 +17,7 @@
     <PackageReference Include="SkiaSharp" Version="2.88.9" />
     <PackageReference Include="SkiaSharp.Skottie" Version="2.88.9" />
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="2.88.9" />
-    <AvaloniaResource Include="../ClipBoard/Assets/tray.ico" Link="Assets/tray.ico" />
+    <AvaloniaResource Include="Assets/menubar.png" />
     <Compile Include="../ClipBoard/Models/*.cs" Link="Models/%(Filename)%(Extension)" />
     <Compile Include="../ClipBoard/Services/AppSettings.cs;../ClipBoard/Services/FavoritesStore.cs;../ClipBoard/Services/PersistenceService.cs;../ClipBoard/Services/RichText.cs;../ClipBoard/Services/Sticker*.cs;../ClipBoard/Services/Telegram*.cs" Link="Services/%(Filename)%(Extension)" />
   </ItemGroup>
