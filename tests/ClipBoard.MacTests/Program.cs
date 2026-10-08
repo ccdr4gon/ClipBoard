@@ -236,9 +236,13 @@ internal static class Program
         await Task.Delay(50);
         Check(app.LastPreviewCopy == (first.Id, true, true), "Shift+回车没有粘贴为纯文本");
 
-        // 粘贴结束时面板会重新渲染列表，CI 较慢时要等新的行生成后再取。
+        // 粘贴结束时面板会重新渲染列表。CI 的 Mac 上别的窗口偶尔抢走焦点，面板按设计失焦隐藏，隐藏的窗口不再布局，
+        // 新的行就一直不生成；这一步测的是单击，不是失焦隐藏，所以重新显示面板。
+        if (!window.IsVisible) { Console.WriteLine("  面板在测试中失焦隐藏，重新显示"); app.ShowPanel(); }
         for (int i = 0; i < 40 && list.GetVisualDescendants().OfType<ListBoxItem>().Count() < 3; i++) await Task.Delay(50);
-        var row = list.GetVisualDescendants().OfType<ListBoxItem>().ElementAt(2);
+        var rows = list.GetVisualDescendants().OfType<ListBoxItem>().ToArray();
+        Check(rows.Length > 2, $"粘贴后列表没有重新生成行：visible={window.IsVisible} active={window.IsActive} items={list.ItemCount} rows={rows.Length}");
+        var row = rows[2];
         var target = (ClipItem)row.DataContext!;
         // 先点行的内边距（不在卡片内容上），再按住 Shift 点行中间。
         var padding = row.TranslatePoint(new Point(4, row.Bounds.Height / 2), window)!.Value;
