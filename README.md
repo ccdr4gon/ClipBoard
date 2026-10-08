@@ -47,7 +47,7 @@
 
 提供 Apple Silicon 和 Intel 两种构建，要求 macOS 13+。保留标签页和卡片布局，支持历史缩略图、收藏、Telegram 贴纸导入、GIF 编辑和发布更新。
 
-在 [v1.1.2 正式版](https://github.com/ccdr4gon/ClipBoard/releases/tag/v1.1.2) 下载 `ClipBoard-1.1.2-macos-arm64.zip`（M 系列）或 `ClipBoard-1.1.2-macos-x64.zip`（Intel）。主面板已按 Windows 的紧凑列表和纸片卡片布局对齐，并修复设置弹窗被置顶面板遮挡的问题。
+在 [v1.2.0 Release](https://github.com/ccdr4gon/ClipBoard/releases/tag/v1.2.0) 下载 `ClipBoard-1.2.0-macos-arm64.zip`（M 系列）或 `ClipBoard-1.2.0-macos-x64.zip`（Intel）。单击或回车即可粘贴并保留原格式，自动粘贴失败时面板不再重新弹出。
 
 ```sh
 python3 scripts/package-macos.py --arch arm64  # M 系列 Mac
@@ -59,7 +59,7 @@ python3 scripts/package-macos.py --arch x64    # Intel Mac
 
 ### 下载（推荐）
 
-Windows 安装包见 [**Windows v1.0.3 Release**](https://github.com/ccdr4gon/ClipBoard/releases/tag/v1.0.3)；最新 macOS 修复版单独提供上面的 Mac 下载文件。
+Windows 安装包见 [**v1.2.0 Release**](https://github.com/ccdr4gon/ClipBoard/releases/tag/v1.2.0) 中的 `ClipBoard-v1.2.0-win-x64.exe`；同一 Release 也提供上面的 Mac 下载文件。
 
 > **自包含单文件，无需安装 .NET 运行时**，双击即用。首次运行会自动注册开机启动（可在设置里关闭）。
 

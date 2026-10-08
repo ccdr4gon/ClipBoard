@@ -5,7 +5,7 @@ Windows 原有 WPF 界面保持独立；Mac 使用 Avalonia，并直接编译同
 
 从 v1.1.1 开始，Mac 主面板按 Windows 版的 780×640 布局对齐：紧凑标题栏、搜索框、中英双行标签、历史列表和纸片式图片卡片。系统字体和文字渲染仍可能略有差异。
 
-v1.1.2 为正式版，修复设置、编辑和预览弹窗被置顶主面板遮挡的问题。弹窗打开时主面板暂时让出置顶，关闭后恢复；此时按快捷键优先唤起弹窗。Release 的正式版标记不等同于 Apple 公证，目前仍使用临时签名。
+v1.2.0 起单击条目即可粘贴，复制的 HTML / RTF 格式会一起保存并在粘贴时保留；自动粘贴失败时面板隐藏并交还焦点，不再重新弹出。v1.1.2 修复了设置、编辑和预览弹窗被置顶主面板遮挡的问题。Release 的正式版标记不等同于 Apple 公证，目前仍使用临时签名。
 
 ## 构建和运行
 
@@ -34,7 +34,7 @@ Windows 上生成的包尚未经过 Mac 签名检查，也没有 Apple 公证，
 
 ```sh
 python3 scripts/package-macos.py --arch arm64 --sign 'Developer ID Application: Your Name (TEAMID)'
-xcrun notarytool submit dist/macos-arm64/ClipBoard-1.1.2-macos-arm64.zip --keychain-profile YOUR_PROFILE --wait
+xcrun notarytool submit dist/macos-arm64/ClipBoard-1.2.0-macos-arm64.zip --keychain-profile YOUR_PROFILE --wait
 xcrun stapler staple dist/macos-arm64/ClipBoard.app
 ```
 
