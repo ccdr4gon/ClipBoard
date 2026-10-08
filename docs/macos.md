@@ -5,7 +5,7 @@ Windows 原有 WPF 界面保持独立；Mac 使用 Avalonia，并直接编译同
 
 从 v1.1.1 开始，Mac 主面板按 Windows 版的 780×640 布局对齐：紧凑标题栏、搜索框、中英双行标签、历史列表和纸片式图片卡片。系统字体和文字渲染仍可能略有差异。
 
-v1.2.0 起单击条目即可粘贴，复制的 HTML / RTF 格式会一起保存并在粘贴时保留；自动粘贴失败时面板隐藏并交还焦点，不再重新弹出。v1.2.1 补上“发送按键”授权检查，修复面板隐藏后没有自动粘贴的问题。v1.1.2 修复了设置、编辑和预览弹窗被置顶主面板遮挡的问题。Release 的正式版标记不等同于 Apple 公证，目前仍使用临时签名。
+v1.2.0 起单击条目即可粘贴，复制的 HTML / RTF 格式会一起保存并在粘贴时保留；自动粘贴失败时面板隐藏并交还焦点，不再重新弹出。v1.2.1 补上“发送按键”授权检查；v1.2.2 改为任一项授权通过即发送 ⌘V，修复 macOS 27 上辅助功能已授权却仍不粘贴的问题。v1.1.2 修复了设置、编辑和预览弹窗被置顶主面板遮挡的问题。Release 的正式版标记不等同于 Apple 公证，目前仍使用临时签名。
 
 ## 构建和运行
 
@@ -26,7 +26,8 @@ python3 scripts/package-macos.py --arch arm64
 python3 scripts/package-macos.py --arch x64
 ```
 
-输出在 `dist/macos-arm64/` 和 `dist/macos-x64/`。解压 ZIP，把 `ClipBoard.app` 拖入“应用程序”后运行。
+输出在 `dist/macos-arm64/` 和 `dist/macos-x64/`。解压 ZIP，用访达把 `ClipBoard.app` 拖入“应用程序”后运行；更新时拖入并选“替换”。
+不要直接在“下载”里运行：反复解压会生成 `ClipBoard 2.app`、`ClipBoard 3.app`… 多个副本，它们共用同一个应用 ID，系统授权会记到其中一份上而对不上正在运行的那份。
 脚本在 Windows 上也能交叉编译，并在 ZIP 中保存 Unix 执行权限；Mac 上构建会自动进行本机临时签名和签名检查。
 Windows 上生成的包尚未经过 Mac 签名检查，也没有 Apple 公证，不应当作正式发行包。
 
@@ -34,7 +35,7 @@ Windows 上生成的包尚未经过 Mac 签名检查，也没有 Apple 公证，
 
 ```sh
 python3 scripts/package-macos.py --arch arm64 --sign 'Developer ID Application: Your Name (TEAMID)'
-xcrun notarytool submit dist/macos-arm64/ClipBoard-1.2.1-macos-arm64.zip --keychain-profile YOUR_PROFILE --wait
+xcrun notarytool submit dist/macos-arm64/ClipBoard-1.2.2-macos-arm64.zip --keychain-profile YOUR_PROFILE --wait
 xcrun stapler staple dist/macos-arm64/ClipBoard.app
 ```
 
@@ -54,15 +55,15 @@ xcrun stapler staple dist/macos-arm64/ClipBoard.app
 - “设置”里开启登录启动；系统如需批准，请到“通用 → 登录项”允许。
 - 关闭窗口会隐藏到菜单栏；退出请用菜单栏菜单。
 
-自动粘贴需要在“系统设置 → 隐私与安全性 → 辅助功能”允许 ClipBoard。记录历史和复制不依赖这项授权。
+自动粘贴需要在“系统设置 → 隐私与安全性 → 辅助功能”允许 ClipBoard；macOS 27 起这一项改名为“设备控制与数据访问”（Device Control and Data Access）。记录历史和复制不依赖这项授权。
 未授权或无法激活原应用时，面板照样隐藏、焦点交还原应用，内容已在剪贴板里，直接按 `⌘V` 即可；原因会在下次打开面板时显示。
 首次未授权时会弹出系统的授权提示。程序不自动申请屏幕录制权限。
 
 目前使用临时签名，**每次更新应用后旧的辅助功能授权都会失效**，即使列表里的开关仍显示为打开。
 这时请在列表中选中 ClipBoard，用“−”移除，再用“+”重新添加 `/Applications/ClipBoard.app` 并打开开关；或在终端运行
-`tccutil reset Accessibility io.github.ccdr4gon.clipboard` 后重新授权。
+`tccutil reset Accessibility io.github.ccdr4gon.clipboard` 和 `tccutil reset PostEvent io.github.ccdr4gon.clipboard` 后重新授权，再退出并重新打开 ClipBoard。
 
-设置窗口分别显示“辅助功能”和“发送按键”两项授权状态，两项都已授权才能自动粘贴。每次自动粘贴的结果、授权状态和目标应用记录在
+设置窗口分别显示“辅助功能”和“发送按键”两项授权状态。系统对这两项的检查可能不一致（macOS 27 上见过辅助功能已授权、发送按键仍报未授权），任一项通过就会发送 ⌘V，发送按键未授权时还会弹出一次系统提示。每次自动粘贴的结果、授权状态和目标应用记录在
 `~/Library/Application Support/ClipBoard/diag.log`（不含剪贴板内容），自动粘贴不生效时可以据此排查。
 
 ## 数据与迁移

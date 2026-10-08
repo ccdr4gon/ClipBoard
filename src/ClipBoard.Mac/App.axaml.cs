@@ -101,17 +101,21 @@ public partial class App : Application
         // 无论能否自动粘贴都不再弹回面板：内容已在剪贴板，焦点已交还原应用，可直接按 ⌘V。原因留到下次打开面板时显示。
         int target = PreviousApp;
         var result = await MacNative.PasteAsync(target);
-        Diag($"paste result={result} ax={MacNative.IsAxTrusted} postEvent={MacNative.CanPostEvents} target={target} {MacNative.BundleId(target)} " +
-            $"front={MacNative.ForegroundPid()} plain={plainText} macOS={Environment.OSVersion.Version}");
+        bool ax = MacNative.IsAxTrusted, post = MacNative.CanPostEvents;
+        Diag($"paste result={result} ax={ax} postEvent={post} target={target} {MacNative.BundleId(target)} " +
+            $"front={MacNative.ForegroundPid()} plain={plainText} macOS={Environment.OSVersion.Version} app={Environment.ProcessPath}");
+        // 缺哪项授权就申请哪项，每次启动只弹一次；申请会把当前运行的这份程序登记到系统授权里。
+        if (!(ax && post) && !_accessibilityPrompted) { _accessibilityPrompted = true; MacNative.RequestAccessibility(); }
         if (result == MacNative.PasteResult.NotTrusted)
-        {
-            _window?.SetStatus("已复制，但没有自动粘贴：ClipBoard 还没有辅助功能权限。请到系统设置 → 隐私与安全性 → 辅助功能打开 ClipBoard；" +
-                "更新应用后开关虽显示已打开却无效时，先用“−”移除 ClipBoard，再重新添加。");
-            if (!_accessibilityPrompted) { _accessibilityPrompted = true; MacNative.RequestAccessibility(); }
-        }
+            _window?.SetStatus("已复制，但没有自动粘贴：ClipBoard 还没有辅助功能权限。请到系统设置 → 隐私与安全性 → " + AccessibilityPane + "打开 ClipBoard；" +
+                "更新应用后开关虽显示已打开却无效时，先用“−”移除 ClipBoard 再重新添加，然后退出并重新打开 ClipBoard。");
         else if (result != MacNative.PasteResult.Pasted)
             _window?.SetStatus("已复制，但没能切回原应用自动粘贴，请切回后按 ⌘V。");
+        else if (!post)
+            _window?.SetStatus("已发送 ⌘V。如果没有粘贴进去，请在系统弹出的提示中允许 ClipBoard 控制电脑，或到 " + AccessibilityPane + "重新打开 ClipBoard 的开关后重试。");
     }
+    /// <summary>macOS 27 把隐私设置里的“辅助功能”改名为“设备控制与数据访问”。</summary>
+    internal static string AccessibilityPane => OperatingSystem.IsMacOSVersionAtLeast(27) ? "设备控制与数据访问（Device Control and Data Access）" : "辅助功能";
     // 每次自动粘贴记一行权限和焦点状态，排查“面板消失但没粘贴”。不记录剪贴板内容。
     private static void Diag(string line)
     {

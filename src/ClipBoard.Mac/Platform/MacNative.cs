@@ -59,9 +59,10 @@ internal static class MacNative
     internal enum PasteResult { Pasted, NotTrusted, NoTarget, NotActivated }
 
     internal static bool IsAxTrusted => AXIsProcessTrusted() != 0;
-    /// <summary>发送 ⌘V 由单独的“发送事件”授权管控；没有它时按键会被系统静默丢弃，而辅助功能 API 仍可能显示已授权。</summary>
+    /// <summary>发送 ⌘V 由单独的“发送事件”授权管控，两项检查可能不一致：macOS 27 上出现过辅助功能已授权、发送事件仍报未授权。</summary>
     internal static bool CanPostEvents => CGPreflightPostEventAccess() != 0;
-    internal static bool IsAccessibilityTrusted => IsAxTrusted && CanPostEvents;
+    /// <summary>任一项通过就尝试发送；即使按键被系统丢弃，内容也已在剪贴板里。</summary>
+    internal static bool IsAccessibilityTrusted => IsAxTrusted || CanPostEvents;
 
     /// <summary>未授权时弹出系统的辅助功能授权提示。应用更新后临时签名会变化，旧授权条目随之失效。</summary>
     internal static void RequestAccessibility()
