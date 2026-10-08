@@ -236,6 +236,8 @@ internal static class Program
         await Task.Delay(50);
         Check(app.LastPreviewCopy == (first.Id, true, true), "Shift+回车没有粘贴为纯文本");
 
+        // 粘贴结束时面板会重新渲染列表，CI 较慢时要等新的行生成后再取。
+        for (int i = 0; i < 40 && list.GetVisualDescendants().OfType<ListBoxItem>().Count() < 3; i++) await Task.Delay(50);
         var row = list.GetVisualDescendants().OfType<ListBoxItem>().ElementAt(2);
         var target = (ClipItem)row.DataContext!;
         // 先点行的内边距（不在卡片内容上），再按住 Shift 点行中间。
