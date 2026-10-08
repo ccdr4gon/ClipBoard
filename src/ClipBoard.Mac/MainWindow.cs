@@ -309,7 +309,8 @@ public sealed partial class MainWindow : Window
             if (OperatingSystem.IsMacOS()) Process.Start(new ProcessStartInfo("open") { ArgumentList = { "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" }, UseShellExecute = false });
             return Task.CompletedTask;
         }));
-        string trust = !OperatingSystem.IsMacOS() || App.Preview ? "" : MacNative.IsAccessibilityTrusted ? "当前状态：已授权。" : "当前状态：未授权。";
+        string trust = !OperatingSystem.IsMacOS() || App.Preview ? "" :
+            $"当前状态：辅助功能{(MacNative.IsAxTrusted ? "已授权" : "未授权")}，发送按键{(MacNative.CanPostEvents ? "已授权" : "未授权")}。";
         panel.Children.Add(new TextBlock { Text = "复制和记录历史不需要辅助功能权限。自动粘贴需要授权；未授权时可手动按 ⌘V。" + trust +
             "\n更新应用后若开关显示已打开但仍无法自动粘贴，请在列表里用“−”移除 ClipBoard 再重新添加。", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(message);

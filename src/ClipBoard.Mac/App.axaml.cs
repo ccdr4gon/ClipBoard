@@ -99,7 +99,10 @@ public partial class App : Application
         _window?.SetStatus("");
         _window?.Hide();
         // 无论能否自动粘贴都不再弹回面板：内容已在剪贴板，焦点已交还原应用，可直接按 ⌘V。原因留到下次打开面板时显示。
-        var result = await MacNative.PasteAsync(PreviousApp);
+        int target = PreviousApp;
+        var result = await MacNative.PasteAsync(target);
+        Diag($"paste result={result} ax={MacNative.IsAxTrusted} postEvent={MacNative.CanPostEvents} target={target} {MacNative.BundleId(target)} " +
+            $"front={MacNative.ForegroundPid()} plain={plainText} macOS={Environment.OSVersion.Version}");
         if (result == MacNative.PasteResult.NotTrusted)
         {
             _window?.SetStatus("已复制，但没有自动粘贴：ClipBoard 还没有辅助功能权限。请到系统设置 → 隐私与安全性 → 辅助功能打开 ClipBoard；" +
@@ -108,6 +111,18 @@ public partial class App : Application
         }
         else if (result != MacNative.PasteResult.Pasted)
             _window?.SetStatus("已复制，但没能切回原应用自动粘贴，请切回后按 ⌘V。");
+    }
+    // 每次自动粘贴记一行权限和焦点状态，排查“面板消失但没粘贴”。不记录剪贴板内容。
+    private static void Diag(string line)
+    {
+        try
+        {
+            var path = Path.Combine(Persistence.RootDirectory, "diag.log");
+            if (File.Exists(path) && new FileInfo(path).Length > 256 * 1024) File.Delete(path);
+            File.AppendAllText(path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {line}\n");
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
     public void Quit()
     {

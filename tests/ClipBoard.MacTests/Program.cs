@@ -174,6 +174,11 @@ internal static class Program
         Check(MacClipboard.Write(rich, App.Persistence) && MacClipboard.Read() is { Text: "1. 列表", Rich.Html: { } html } && html.Contains("<li>列表</li>"), "原生 HTML 格式读写失败");
         Check(MacClipboard.Write(rich, App.Persistence, plainText: true) && MacClipboard.Read() is { Text: "1. 列表", Rich: null }, "纯文本粘贴仍带格式");
         using var hotkey = new MacHotkey(() => { });
+        // 自动粘贴用到的系统函数都能找到；CI 没有辅助功能授权，这里不实际发送 ⌘V。
+        var services = System.Runtime.InteropServices.NativeLibrary.Load("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices");
+        foreach (var name in new[] { "AXIsProcessTrusted", "CGPreflightPostEventAccess", "CGRequestPostEventAccess", "CGEventSourceCreate", "CGEventSourceSetLocalEventsFilterDuringSuppressionState", "CGEventPost" })
+            Check(System.Runtime.InteropServices.NativeLibrary.TryGetExport(services, name, out _), "找不到系统函数 " + name);
+        _ = MacNative.IsAccessibilityTrusted;
         var store = new TelegramConnectionStore(Root);
         store.Save(new("123456:local_test_only", 1234));
         Check(store.Load().Token == "123456:local_test_only" && !File.ReadAllText(Path.Combine(Root, "telegram-connection.json")).Contains("local_test_only"), "钥匙串保存失败");

@@ -62,6 +62,9 @@ xcrun stapler staple dist/macos-arm64/ClipBoard.app
 这时请在列表中选中 ClipBoard，用“−”移除，再用“+”重新添加 `/Applications/ClipBoard.app` 并打开开关；或在终端运行
 `tccutil reset Accessibility io.github.ccdr4gon.clipboard` 后重新授权。
 
+设置窗口分别显示“辅助功能”和“发送按键”两项授权状态，两项都已授权才能自动粘贴。每次自动粘贴的结果、授权状态和目标应用记录在
+`~/Library/Application Support/ClipBoard/diag.log`（不含剪贴板内容），自动粘贴不生效时可以据此排查。
+
 ## 数据与迁移
 
 Mac 数据目录：`~/Library/Application Support/ClipBoard/`。

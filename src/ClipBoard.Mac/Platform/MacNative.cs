@@ -58,14 +58,28 @@ internal static class MacNative
 
     internal enum PasteResult { Pasted, NotTrusted, NoTarget, NotActivated }
 
-    internal static bool IsAccessibilityTrusted => AXIsProcessTrusted() != 0;
+    internal static bool IsAxTrusted => AXIsProcessTrusted() != 0;
+    /// <summary>发送 ⌘V 由单独的“发送事件”授权管控；没有它时按键会被系统静默丢弃，而辅助功能 API 仍可能显示已授权。</summary>
+    internal static bool CanPostEvents => CGPreflightPostEventAccess() != 0;
+    internal static bool IsAccessibilityTrusted => IsAxTrusted && CanPostEvents;
 
     /// <summary>未授权时弹出系统的辅助功能授权提示。应用更新后临时签名会变化，旧授权条目随之失效。</summary>
     internal static void RequestAccessibility()
     {
         using var pool = new Pool();
-        var prompt = Call(Class("NSNumber"), "numberWithBool:", 1);
-        AXIsProcessTrustedWithOptions(Call(Class("NSDictionary"), "dictionaryWithObject:forKey:", prompt, String("AXTrustedCheckOptionPrompt")));
+        if (!IsAxTrusted)
+        {
+            var prompt = Call(Class("NSNumber"), "numberWithBool:", 1);
+            AXIsProcessTrustedWithOptions(Call(Class("NSDictionary"), "dictionaryWithObject:forKey:", prompt, String("AXTrustedCheckOptionPrompt")));
+        }
+        else if (!CanPostEvents) CGRequestPostEventAccess();
+    }
+
+    internal static string BundleId(int pid)
+    {
+        using var pool = new Pool();
+        var app = pid > 0 ? Call(Class("NSRunningApplication"), "runningApplicationWithProcessIdentifier:", pid) : 0;
+        return app == 0 ? "" : Text(Call(app, "bundleIdentifier"));
     }
 
     /// <summary>粘贴时为交还焦点隐藏了整个应用，再次显示面板前取消隐藏。</summary>
@@ -78,7 +92,7 @@ internal static class MacNative
     /// <summary>把焦点交还给打开面板前的应用，再发送 ⌘V。未授权或切换失败时内容仍在剪贴板里。</summary>
     internal static async Task<PasteResult> PasteAsync(int pid)
     {
-        bool trusted = AXIsProcessTrusted() != 0;
+        bool trusted = IsAccessibilityTrusted;
         bool hasTarget = pid > 0 && pid != Environment.ProcessId;
         bool focused = await ReturnFocusAsync(hasTarget ? pid : 0);
         if (!trusted) return PasteResult.NotTrusted;
@@ -109,26 +123,37 @@ internal static class MacNative
         return ForegroundPid() == pid;
     }
 
-    private const int HidSystemState = 1;
+    private const int CombinedSessionState = 0, HidSystemState = 1;
     private const ulong HeldModifiers = (1UL << 17) | (1UL << 18) | (1UL << 19) | (1UL << 20); // Shift、Control、Option、Command
+    private const ulong CommandFlags = (1UL << 20) | 0x8; // 加上左 Command 的设备位，部分应用只认设备位
+    private const uint AnnotatedSessionTap = 2;
+    private const uint PermitMouseAndSystemEvents = 0x1 | 0x4;
 
+    // 与 Maccy、Clipy 的做法一致：合并会话状态的事件源发到会话层，并在这段时间里屏蔽本地键盘事件，
+    // 免得还没松开的回车等按键混进 ⌘V。
     private static bool PostCommandV()
     {
-        var down = CGEventCreateKeyboardEvent(0, 9, 1);
-        var up = CGEventCreateKeyboardEvent(0, 9, 0);
+        var source = CGEventSourceCreate(CombinedSessionState);
+        var down = CGEventCreateKeyboardEvent(source, 9, 1);
+        var up = CGEventCreateKeyboardEvent(source, 9, 0);
         try
         {
             if (down == 0 || up == 0) return false;
-            CGEventSetFlags(down, 1UL << 20); CGEventSetFlags(up, 1UL << 20);
-            CGEventPost(0, down); CGEventPost(0, up);
+            if (source != 0) CGEventSourceSetLocalEventsFilterDuringSuppressionState(source, PermitMouseAndSystemEvents, 0);
+            CGEventSetFlags(down, CommandFlags); CGEventSetFlags(up, CommandFlags);
+            CGEventPost(AnnotatedSessionTap, down); CGEventPost(AnnotatedSessionTap, up);
             return true;
         }
-        finally { if (down != 0) CFRelease(down); if (up != 0) CFRelease(up); }
+        finally { if (down != 0) CFRelease(down); if (up != 0) CFRelease(up); if (source != 0) CFRelease(source); }
     }
     [DllImport(Core)] internal static extern void CFRelease(nint value);
     [DllImport(AppServices)] private static extern byte AXIsProcessTrusted();
     [DllImport(AppServices)] private static extern byte AXIsProcessTrustedWithOptions(nint options);
+    [DllImport(AppServices)] private static extern byte CGPreflightPostEventAccess();
+    [DllImport(AppServices)] private static extern byte CGRequestPostEventAccess();
     [DllImport(AppServices)] private static extern ulong CGEventSourceFlagsState(int state);
+    [DllImport(AppServices)] private static extern nint CGEventSourceCreate(int state);
+    [DllImport(AppServices)] private static extern void CGEventSourceSetLocalEventsFilterDuringSuppressionState(nint source, uint filter, uint state);
     [DllImport(AppServices)] private static extern nint CGEventCreateKeyboardEvent(nint source, ushort key, byte down);
     [DllImport(AppServices)] private static extern void CGEventSetFlags(nint ev, ulong flags);
     [DllImport(AppServices)] private static extern void CGEventPost(uint tap, nint ev);
