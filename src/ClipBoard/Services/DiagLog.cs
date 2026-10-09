@@ -25,7 +25,7 @@ public static class DiagLog
     private const long MaxBytes = 1024 * 1024; // 单文件上限，超出后滚动到 .1
     private static readonly object Gate = new();
     private static readonly Stopwatch Uptime = Stopwatch.StartNew();
-    private static readonly string Dir = Path.Combine(
+    private static readonly string Dir = BenchMode.Root ?? Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard");
 
     private static string LogPath => Path.Combine(Dir, "diag.log");

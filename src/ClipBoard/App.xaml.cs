@@ -29,7 +29,7 @@ public partial class App : Application
     private static string _exitReason = "unknown";
 
     private static readonly string CrashLog = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard", "crash.log");
+        BenchMode.Root ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard"), "crash.log");
 
     private void OnStartup(object sender, StartupEventArgs e)
     {
@@ -46,9 +46,11 @@ public partial class App : Application
             Shutdown();
             return;
         }
-        if (!byKeepAlive) ClearQuitMarker();
+        // 基准模式与正在使用的实例并存：不碰退出标记，单实例锁用独立的名字。
+        if (!byKeepAlive && !BenchMode.Enabled) ClearQuitMarker();
 
-        _singleInstanceMutex = new Mutex(initiallyOwned: true, @"Local\ClipBoard.SingleInstance", out bool createdNew);
+        _singleInstanceMutex = new Mutex(initiallyOwned: true,
+            BenchMode.Enabled ? $@"Local\ClipBoard.Bench.{Environment.ProcessId}" : @"Local\ClipBoard.SingleInstance", out bool createdNew);
         if (!createdNew)
         {
             // 任务计划每 15 分钟重试一次，绝大多数会走到这里。保持安静：只留一行，
@@ -93,7 +95,7 @@ public partial class App : Application
         PersistedData persisted;
         using (DiagLog.Phase("persistence-load"))
         {
-            Persistence = new PersistenceService();
+            Persistence = BenchMode.Enabled ? new PersistenceService(BenchMode.ProfileDir) : new PersistenceService();
             persisted = Persistence.Load();
             DiagLog.Write("startup", $"loaded history={persisted.History.Count} folders={persisted.Favorites?.Count ?? 0}");
         }
@@ -136,10 +138,13 @@ public partial class App : Application
             }
         };
 
-        using (DiagLog.Phase("tray-icon"))
+        if (!BenchMode.Enabled)
         {
-            _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
-            EnsureTrayIconVisible();
+            using (DiagLog.Phase("tray-icon"))
+            {
+                _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
+                EnsureTrayIconVisible();
+            }
         }
 
         using (DiagLog.Phase("main-window"))
@@ -148,6 +153,13 @@ public partial class App : Application
             var hwnd = new System.Windows.Interop.WindowInteropHelper(_mainWindow).EnsureHandle();
             _mainWindow.Hide();
             DiagLog.Write("startup", $"MainWindow hwnd={hwnd:X}");
+        }
+
+        if (BenchMode.Enabled)
+        {
+            DiagLog.Write("startup", $"=== startup complete in {DiagLog.ElapsedMs}ms (bench) ===");
+            Dispatcher.BeginInvoke(new Action(async () => await BenchMode.RunAsync(_mainWindow)));
+            return;
         }
 
         using (DiagLog.Phase("clipboard-monitor"))

@@ -820,40 +820,39 @@ public partial class MainWindow : Window
         return null;
     }
 
-    public void ShowPanel()
+    public void ShowPanel() => ShowPanelCore(offscreen: false);
+
+    /// <summary>基准模式：走同一条打开路径，但放在所有屏幕之外且不激活，绝不抢焦点。</summary>
+    internal void ShowPanelOffscreen() => ShowPanelCore(offscreen: true);
+
+    private void ShowPanelCore(bool offscreen)
     {
         try
         {
-            var mousePx = GetCursorPos();
-            var waPx = GetWorkAreaForPoint((int)mousePx.X, (int)mousePx.Y);
-            var hMon = MonitorFromPoint(new POINT { X = (int)mousePx.X, Y = (int)mousePx.Y }, MONITOR_DEFAULTTONEAREST);
-            double scale = 1.0;
-            if (GetDpiForMonitor(hMon, 0, out uint dpiX, out _) == 0 && dpiX > 0)
-                scale = dpiX / 96.0;
-
-            double mouseXDip = mousePx.X / scale;
-            double mouseYDip = mousePx.Y / scale;
-            double waLeft = waPx.Left / scale;
-            double waTop = waPx.Top / scale;
-            double waRight = waPx.Right / scale;
-            double waBottom = waPx.Bottom / scale;
-
-            Left = Math.Min(mouseXDip, waRight - Width - 12);
-            Top = Math.Min(mouseYDip, waBottom - Height - 12);
-            if (Left < waLeft + 12) Left = waLeft + 12;
-            if (Top < waTop + 12) Top = waTop + 12;
+            // 打开耗时：从热键到首帧渲染完成（ContextIdle 排在 Render 之后），记入 diag.log 便于对比优化效果。
+            var openTimer = System.Diagnostics.Stopwatch.StartNew();
+            bool wasVisible = IsVisible;
+            Dispatcher.BeginInvoke(() => DiagLog.Write("panel", $"open {openTimer.ElapsedMilliseconds}ms{(wasVisible ? " (already visible)" : "")}"),
+                System.Windows.Threading.DispatcherPriority.ContextIdle);
+            if (offscreen)
+            {
+                ShowActivated = false;
+                Left = SystemParameters.VirtualScreenLeft - Width - 4000;
+                Top = SystemParameters.VirtualScreenTop;
+            }
+            else PlaceAtCursor();
 
             SearchBox.Text = "";
             _lastShownUtc = DateTime.UtcNow;
             var prevFg = GetForegroundWindow();
             var myHwnd = new WindowInteropHelper(this).Handle;
-            if (prevFg != IntPtr.Zero && prevFg != myHwnd) _foregroundBeforeShow = prevFg;
+            if (!offscreen && prevFg != IntPtr.Zero && prevFg != myHwnd) _foregroundBeforeShow = prevFg;
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             Show();
             ResetListPosition();
             Topmost = false;
             Topmost = true;
-            if (!_pinned)
+            if (!_pinned && !offscreen)
             {
                 Activate();
                 ForceForeground();
@@ -862,8 +861,31 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            if (offscreen) throw;
             System.Windows.MessageBox.Show(ex.ToString(), "ShowPanel error");
         }
+    }
+
+    private void PlaceAtCursor()
+    {
+        var mousePx = GetCursorPos();
+        var waPx = GetWorkAreaForPoint((int)mousePx.X, (int)mousePx.Y);
+        var hMon = MonitorFromPoint(new POINT { X = (int)mousePx.X, Y = (int)mousePx.Y }, MONITOR_DEFAULTTONEAREST);
+        double scale = 1.0;
+        if (GetDpiForMonitor(hMon, 0, out uint dpiX, out _) == 0 && dpiX > 0)
+            scale = dpiX / 96.0;
+
+        double mouseXDip = mousePx.X / scale;
+        double mouseYDip = mousePx.Y / scale;
+        double waLeft = waPx.Left / scale;
+        double waTop = waPx.Top / scale;
+        double waRight = waPx.Right / scale;
+        double waBottom = waPx.Bottom / scale;
+
+        Left = Math.Min(mouseXDip, waRight - Width - 12);
+        Top = Math.Min(mouseYDip, waBottom - Height - 12);
+        if (Left < waLeft + 12) Left = waLeft + 12;
+        if (Top < waTop + 12) Top = waTop + 12;
     }
 
     [System.Runtime.InteropServices.DllImport("Shcore.dll")]
