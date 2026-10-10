@@ -22,7 +22,16 @@ public static class InvisibleTextBlock
     public static bool GetShowInvisible(DependencyObject d) => (bool)d.GetValue(ShowInvisibleProperty);
     public static void SetShowInvisible(DependencyObject d, bool v) => d.SetValue(ShowInvisibleProperty, v);
 
-    private static readonly SolidColorBrush MarkerBrush = new(Color.FromRgb(0xD1, 0x14, 0x14));
+    private static readonly SolidColorBrush MarkerBrush = CreateMarkerBrush();
+
+    private static SolidColorBrush CreateMarkerBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(0xD1, 0x14, 0x14));
+        brush.Freeze();
+        return brush;
+    }
+
+    private static string Clean(string s) => s.Replace("\r", "").Replace("\n", " ⏎ ");
 
     private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -32,7 +41,8 @@ public static class InvisibleTextBlock
         tb.Inlines.Clear();
         if (!show)
         {
-            tb.Inlines.Add(new Run(src.Replace("\r", "").Replace("\n", " ⏎ ")));
+            // 保持一个 Run（复杂内容模式）：改成直接设 Text 会走另一条排版路径，省略号前的字形位置有亚像素差别。
+            tb.Inlines.Add(new Run(Clean(src)));
             return;
         }
         Render(tb, src);
@@ -46,7 +56,7 @@ public static class InvisibleTextBlock
         void FlushNormal()
         {
             if (buf.Length == 0) return;
-            tb.Inlines.Add(new Run(buf.ToString().Replace("\r", "").Replace("\n", " ⏎ ")));
+            tb.Inlines.Add(new Run(Clean(buf.ToString())));
             buf.Clear();
         }
 
