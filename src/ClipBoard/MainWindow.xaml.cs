@@ -59,12 +59,9 @@ public partial class MainWindow : Window
             if (_historyTab != null) return;
             BuildTabs();
         };
-        // 启动空闲后预热面板。基准模式默认测冷启动的首次打开，不预热；设 CLIPBOARD_BENCH_PREWARM=1 时在基准开始前同步预热，
-        // 用来测预热后的首次打开（Normal 优先级排在 BenchMode.RunAsync 之前）。
+        // 启动空闲后预热面板。基准模式由 BenchMode.RunAsync 在记下启动耗时之后按同样的优先级自己调用，量的就是发布版的时间线。
         if (!BenchMode.Enabled)
             Dispatcher.BeginInvoke(new Action(Prewarm), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        else if (Environment.GetEnvironmentVariable("CLIPBOARD_BENCH_PREWARM") == "1")
-            Dispatcher.BeginInvoke(new Action(Prewarm), System.Windows.Threading.DispatcherPriority.Normal);
         SourceInitialized += OnSourceInitialized;
         Closed += (_, _) => _stickerActions?.Cancel();
         Activated += (_, _) =>
@@ -262,7 +259,7 @@ public partial class MainWindow : Window
     /// 第一次按热键时 Show() 里的布局几乎没有活可干。只对从未显示过、也还没建标签页的窗口做；
     /// 已显示的窗口绝不在这里重排（最大化时会把内容排成 780×640）。之后的首次打开流程不变，照样选中第一行。
     /// </summary>
-    private void Prewarm()
+    internal void Prewarm()
     {
         if (_historyTab != null || IsVisible) return;
         try

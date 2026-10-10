@@ -35,7 +35,22 @@ internal static class BenchMode
             result["readyUiCpuMs"] = Math.Round(UiThreadCpuMs());
             result["afterStartup"] = Memory(process);
 
-            // 打开 / 关闭面板若干次：第一次包含首次 Loaded（建标签页、模板），之后是常态。
+            // 照发布版的时间线：启动完成后先有几次复制，再在 ApplicationIdle 预热面板，预热之后、首次打开之前又有几次复制。
+            // CLIPBOARD_BENCH_PREWARM=0 时不预热，测冷的首次打开（预热之前的版本就是这样）。
+            result["capturesBeforePrewarm"] = await CaptureProbe();
+            if (Environment.GetEnvironmentVariable("CLIPBOARD_BENCH_PREWARM") != "0")
+            {
+                double ui = UiThreadCpuMs();
+                var sw = Stopwatch.StartNew();
+                await Dispatcher.CurrentDispatcher.InvokeAsync(window.Prewarm, DispatcherPriority.ApplicationIdle);
+                await Idle();
+                result["prewarmMs"] = Math.Round(sw.Elapsed.TotalMilliseconds, 1);
+                result["prewarmUiCpuMs"] = Math.Round(UiThreadCpuMs() - ui, 1);
+                result["afterPrewarm"] = Memory(process);
+                result["capturesAfterPrewarm"] = await CaptureProbe();
+            }
+
+            // 打开 / 关闭面板若干次：第一次是预热之后的首次打开（不预热时包含首次 Loaded：建标签页、模板），之后是常态。
             var openMs = new List<double>();
             var openCpuMs = new List<double>();
             var openUiCpuMs = new List<double>();
@@ -127,6 +142,9 @@ internal static class BenchMode
             await Task.Delay(10000);
             process.Refresh();
             result["idleCpuMsPer10s"] = Math.Round((process.TotalProcessorTime - idleCpu).TotalMilliseconds, 1);
+
+            // 打开过之后面板隐藏时每次复制的开销（隐藏的窗口照样排版），作为上面两次的参照。放在最后，不影响前面的数。
+            result["capturesWhileHidden"] = await CaptureProbe();
         }
         catch (Exception ex)
         {
@@ -147,6 +165,30 @@ internal static class BenchMode
     private static extern bool GetThreadTimes(IntPtr thread, out long creation, out long exit, out long kernel, out long user);
 
     private static Task Idle() => Dispatcher.CurrentDispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle).Task;
+
+    // 模拟复制在面板这边引起的工作：历史满 200 条时一次复制是「最前插入一条 + 裁掉最后一条」两次 CollectionChanged。
+    // 这里把最后一条挪到最前（同样两次事件），等布局做完，再挪回原位（也是两次事件，同样计作一次复制）；
+    // 数据最后原样不变，不保存、不碰剪贴板。
+    private static async Task<object> CaptureProbe()
+    {
+        const int rounds = 10;
+        var items = App.History.Items;
+        if (items.Count < 2) return new { captures = 0, ms = 0.0, uiCpuMs = 0.0 };
+        await Idle();
+        double ui = UiThreadCpuMs();
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < rounds; i++)
+        {
+            var last = items[^1];
+            items.RemoveAt(items.Count - 1);
+            items.Insert(0, last);
+            await Idle();
+            items.RemoveAt(0);
+            items.Add(last);
+            await Idle();
+        }
+        return new { captures = rounds * 2, ms = Math.Round(sw.Elapsed.TotalMilliseconds, 1), uiCpuMs = Math.Round(UiThreadCpuMs() - ui, 1) };
+    }
 
     private static object Memory(Process process)
     {
