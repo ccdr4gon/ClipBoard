@@ -193,6 +193,9 @@ public class PersistenceService
         {
             // 明确关闭文件流；用 Uri + CacheOption.None 创建解码器会把文件锁留给 GC。
             using var stream = File.OpenRead(Path.Combine(_blobsDir, name));
+            // blob 都是 PNG：尺寸就写在文件头的 IHDR 里，直接读出，省掉一次解码器创建。其他格式仍交给解码器。
+            if (TryReadPngSize(stream, out int pngWidth, out int pngHeight)) return (pngWidth, pngHeight);
+            stream.Position = 0;
 #if AVALONIA
             using var codec = SkiaSharp.SKCodec.Create(stream);
             return codec == null ? (0, 0) : (codec.Info.Width, codec.Info.Height);
@@ -203,6 +206,21 @@ public class PersistenceService
         }
         catch { return (0, 0); }
     }
+
+    // PNG 规范：8 字节签名之后第一个块必须是 IHDR：长度(4) "IHDR"(4) 宽(4，大端) 高(4，大端)。
+    // 块类型或尺寸不对（CgBI、损坏文件）就返回 false，交回解码器按原样处理。
+    private static bool TryReadPngSize(Stream stream, out int width, out int height)
+    {
+        width = height = 0;
+        Span<byte> header = stackalloc byte[24];
+        if (stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false) < header.Length) return false;
+        if (!header[..8].SequenceEqual(PngSignature) || !header.Slice(12, 4).SequenceEqual("IHDR"u8)) return false;
+        width = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(header.Slice(16, 4));
+        height = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(header.Slice(20, 4));
+        return width > 0 && height > 0;
+    }
+
+    private static ReadOnlySpan<byte> PngSignature => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
     public void DeleteImageBlob(string name)
     {
