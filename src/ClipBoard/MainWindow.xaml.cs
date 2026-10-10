@@ -1248,7 +1248,7 @@ public partial class MainWindow : Window
         var q = SearchBox.Text?.Trim() ?? "";
         if (string.IsNullOrEmpty(q))
         {
-            view.Filter = null;
+            ClearFilter(lb, view);
         }
         else
         {
@@ -1274,9 +1274,17 @@ public partial class MainWindow : Window
         SearchBox.Text = "";
         var lb = GetActiveListBox();
         if (lb != null && lb.ItemsSource != null)
-            CollectionViewSource.GetDefaultView(lb.ItemsSource).Filter = null;
+            ClearFilter(lb, CollectionViewSource.GetDefaultView(lb.ItemsSource));
         UpdateEntryCount();
         UpdateTitleCounter();
+    }
+
+    // CollectionView.Filter 的 setter 不比较新旧值：赋 null 也会 Refresh（Reset），整个列表的条目容器全部重建，
+    // 卡片页每次切回来都要重建所有带阴影的卡片。所以只在真的设过过滤条件时才清。
+    // 历史列表例外：它的行号来自 AlternationIndex，Reset 会从首个可见行重新编号，跳过会让滚动后的行号与以前不同，照旧每次刷新。
+    private static void ClearFilter(ListBox lb, ICollectionView view)
+    {
+        if (view.Filter != null || lb.AlternationCount > 0) view.Filter = null;
     }
 
     private FavoriteFolder? PromptCreateFolder()
