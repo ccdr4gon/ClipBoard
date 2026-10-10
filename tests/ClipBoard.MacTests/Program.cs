@@ -146,6 +146,14 @@ internal static class Program
         var preview = await Media.CreatePreviewAsync(edited, default);
         using var player = new GifPreview(preview);
         Check(player.Source != null, "动画首帧没有显示");
+        // 逐帧刷新的是同一张位图：放进无头窗口里截两次图，画面应当不同。
+        var host = new Window { Width = 200, Height = 200, Content = player, ShowActivated = false };
+        host.Show();
+        await Task.Delay(50);
+        var first = FramePixels(host);
+        await Task.Delay(300);
+        Check(!first.AsSpan().SequenceEqual(FramePixels(host)), "动画预览没有逐帧刷新");
+        host.Close();
         await Task.Delay(200);
         var restored = await Media.RestoreAsync(edited, default);
         Check(restored.Sticker!.Format == StickerFormat.Gif && File.ReadAllBytes(App.Persistence.GetBlobPath(original)).SequenceEqual(File.ReadAllBytes(path)), "恢复原件错误");
@@ -393,6 +401,14 @@ internal static class Program
         try { await Dialogs.PickAsync<int>(window, () => Task.FromException<int>(new IOException("模拟选择器失败"))); }
         catch (IOException) { }
         Check(window.Topmost && !Dialogs.HasModal(window), "选择器失败后没有恢复窗口层级");
+    }
+    private static byte[] FramePixels(TopLevel top)
+    {
+        using var frame = top.CaptureRenderedFrame()!;
+        using var pixels = frame.Lock();
+        var bytes = new byte[pixels.RowBytes * pixels.Size.Height];
+        System.Runtime.InteropServices.Marshal.Copy(pixels.Address, bytes, 0, bytes.Length);
+        return bytes;
     }
     private static byte[] Png(int seed, int w = 160, int h = 160)
     {
