@@ -67,7 +67,11 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(new Action(Prewarm), System.Windows.Threading.DispatcherPriority.Normal);
         SourceInitialized += OnSourceInitialized;
         Closed += (_, _) => _stickerActions?.Cancel();
-        Activated += (_, _) => Log($"ACTIVATED pinned={_pinned} fg={ForegroundHex()}");
+        Activated += (_, _) =>
+        {
+            if (_openProbe is { ActivatedAt: < 0 } probe) probe.ActivatedAt = probe.Sw.ElapsedMilliseconds; // 先打点，再写日志
+            Log($"ACTIVATED pinned={_pinned} fg={ForegroundHex()}");
+        };
         Deactivated += (_, _) => Log($"DEACTIVATED pinned={_pinned} fg={ForegroundHex()}");
         App.Favorites.Folders.CollectionChanged += OnFoldersChanged;
         App.Favorites.PinnedHistory.CollectionChanged += OnPinnedChanged;
@@ -910,10 +914,11 @@ public partial class MainWindow : Window
         try
         {
             // 打开耗时：从热键到首帧渲染完成（ContextIdle 排在 Render 之后），记入 diag.log 便于对比优化效果。
-            var openTimer = System.Diagnostics.Stopwatch.StartNew();
+            // 同一行后面附上分段时间，用来查热键打开到底慢在哪一步（只记日志，不改打开流程）。
+            var probe = new OpenProbe();
+            _openProbe = probe;
             bool wasVisible = IsVisible;
-            Dispatcher.BeginInvoke(() => DiagLog.Write("panel", $"open {openTimer.ElapsedMilliseconds}ms{(wasVisible ? " (already visible)" : "")}"),
-                System.Windows.Threading.DispatcherPriority.ContextIdle);
+            Dispatcher.BeginInvoke(() => LogOpen(probe, wasVisible, offscreen), System.Windows.Threading.DispatcherPriority.ContextIdle);
             if (offscreen)
             {
                 ShowActivated = false;
@@ -921,6 +926,7 @@ public partial class MainWindow : Window
                 Top = SystemParameters.VirtualScreenTop;
             }
             else PlaceAtCursor();
+            probe.Placed = probe.Sw.ElapsedMilliseconds;
 
             SearchBox.Text = "";
             _lastShownUtc = DateTime.UtcNow;
@@ -929,14 +935,20 @@ public partial class MainWindow : Window
             if (!offscreen && prevFg != IntPtr.Zero && prevFg != myHwnd) _foregroundBeforeShow = prevFg;
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             Show();
+            probe.Shown = probe.Sw.ElapsedMilliseconds;
+            Dispatcher.BeginInvoke(() => { if (probe.LoadedAt < 0) probe.LoadedAt = probe.Sw.ElapsedMilliseconds; },
+                System.Windows.Threading.DispatcherPriority.Loaded);
             ResetListPosition();
             Topmost = false;
             Topmost = true;
+            probe.Topmost = probe.Sw.ElapsedMilliseconds;
             if (!_pinned && !offscreen)
             {
                 Activate();
                 ForceForeground();
+                probe.Activate = probe.Sw.ElapsedMilliseconds;
                 SearchBox.Focus();
+                probe.Focused = probe.Sw.ElapsedMilliseconds;
             }
         }
         catch (Exception ex)
@@ -945,6 +957,37 @@ public partial class MainWindow : Window
             System.Windows.MessageBox.Show(ex.ToString(), "ShowPanel error");
         }
     }
+
+    // 一次打开的分段时间（毫秒，自 ShowPanelCore 开始）；-1 表示这一步没有发生（固定模式、基准模式不激活）。
+    private sealed class OpenProbe
+    {
+        public readonly System.Diagnostics.Stopwatch Sw = System.Diagnostics.Stopwatch.StartNew();
+        public readonly double UiCpuStart = UiThreadCpuMs();
+        public readonly int Gc0 = GC.CollectionCount(0), Gc1 = GC.CollectionCount(1), Gc2 = GC.CollectionCount(2);
+        public long Placed = -1, Shown = -1, Topmost = -1, Activate = -1, Focused = -1, ActivatedAt = -1, LoadedAt = -1;
+    }
+    private OpenProbe? _openProbe;
+
+    // 写盘只在这里（ContextIdle，首帧之后）做。act@ 一般小于 show：Activated 在 Show() 内部同步触发。
+    // uiCpu 是 UI 线程 CPU（约 15.6 ms 粒度），远小于总时长说明 UI 线程在等（渲染、输入法、别的进程），而不是在忙。
+    private void LogOpen(OpenProbe p, bool wasVisible, bool offscreen)
+    {
+        double uiCpu = UiThreadCpuMs() - p.UiCpuStart;
+        bool uia = System.Windows.Automation.Peers.AutomationPeer.ListenerExists(System.Windows.Automation.Peers.AutomationEvents.AutomationFocusChanged);
+        DiagLog.Write("panel", $"open {p.Sw.ElapsedMilliseconds}ms{(wasVisible ? " (already visible)" : "")}" +
+            $" | place={p.Placed} act@={p.ActivatedAt} show={p.Shown} topmost={p.Topmost} activate={p.Activate} focus={p.Focused} loaded={p.LoadedAt}" +
+            $" uiCpu={uiCpu:F0} gc={GC.CollectionCount(0) - p.Gc0}/{GC.CollectionCount(1) - p.Gc1}/{GC.CollectionCount(2) - p.Gc2} uia={uia}{(offscreen ? " offscreen" : "")}");
+        if (ReferenceEquals(_openProbe, p)) _openProbe = null;
+    }
+
+    private static double UiThreadCpuMs()
+    {
+        GetThreadTimes(GetCurrentThread(), out _, out _, out long kernel, out long user);
+        return (kernel + user) / 10000.0;
+    }
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern IntPtr GetCurrentThread();
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool GetThreadTimes(IntPtr thread, out long creation, out long exit, out long kernel, out long user);
 
     private void PlaceAtCursor()
     {
