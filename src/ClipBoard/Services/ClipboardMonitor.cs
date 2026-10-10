@@ -1,4 +1,3 @@
-using System.Collections.Specialized;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -71,10 +70,19 @@ public class ClipboardMonitor : IDisposable
         {
             // 在读取时识别自身写入；按时间忽略会漏掉用户紧接着复制的新内容。
             if (_ignoreSequence?.Invoke(HistoryStore.GetClipboardSequenceNumber()) == true) return;
+            // Clipboard.Get* 每次都重新 OleGetClipboard（失败时在窗口线程上最多 10×100ms 重试）。
+            // 同一次通知共用一个数据对象：确实要读时才取，取失败不缓存，各处的重试和异常走向不变。
+            System.Windows.IDataObject? data = null;
+            bool fetched = false;
+            System.Windows.IDataObject? Data()
+            {
+                if (!fetched) { data = Clipboard.GetDataObject(); fetched = true; }
+                return data;
+            }
             if (Clipboard.ContainsImage())
             {
-                var gifUrl = GifHelper.ReadGifUrlFromClipboard();
-                var img = Clipboard.GetImage();
+                var gifUrl = GifHelper.ReadGifUrlFromClipboard(Data);
+                var img = Data()?.GetData(DataFormats.Bitmap, true) as BitmapSource; // 与 Clipboard.GetImage() 相同
                 if (img != null)
                 {
                     img = FixAlphaChannel(img);
@@ -89,9 +97,8 @@ public class ClipboardMonitor : IDisposable
             }
             if (Clipboard.ContainsFileDropList())
             {
-                StringCollection sc = Clipboard.GetFileDropList();
-                var arr = new string[sc.Count];
-                sc.CopyTo(arr, 0);
+                var files = Data()?.GetData(DataFormats.FileDrop, true) as string[]; // 与 Clipboard.GetFileDropList() 相同
+                var arr = files == null ? new string[0] : (string[])files.Clone();
                 QueueChange(new ClipboardChangedEventArgs
                 {
                     Kind = ClipKind.Files,
@@ -101,12 +108,14 @@ public class ClipboardMonitor : IDisposable
             }
             if (Clipboard.ContainsText())
             {
-                string text = Clipboard.GetText();
+                var textData = Data();
+                // 与 Clipboard.GetText() 相同：强制转换，空值记为空串。
+                string text = (string?)textData?.GetData(DataFormats.UnicodeText, false) ?? string.Empty;
                 QueueChange(new ClipboardChangedEventArgs
                 {
                     Kind = ClipKind.Text,
                     Text = text,
-                    Rich = ReadRichContent(),
+                    Rich = ReadRichContent(textData),
                 });
             }
         }
@@ -122,12 +131,12 @@ public class ClipboardMonitor : IDisposable
     }
 
     // 格式读取失败只影响“保留格式”粘贴，不能丢掉纯文本。
-    private static RichContent? ReadRichContent()
+    private static RichContent? ReadRichContent(System.Windows.IDataObject? data)
     {
         string? html = null, rtf = null;
-        try { if (Clipboard.ContainsData(DataFormats.Html)) html = RichText.FromCfHtml(Clipboard.GetData(DataFormats.Html) as string); }
+        try { if (Clipboard.ContainsData(DataFormats.Html)) html = RichText.FromCfHtml(data?.GetData(DataFormats.Html, false) as string); }
         catch (Exception) { }
-        try { if (Clipboard.ContainsData(DataFormats.Rtf)) rtf = Clipboard.GetData(DataFormats.Rtf) as string; }
+        try { if (Clipboard.ContainsData(DataFormats.Rtf)) rtf = data?.GetData(DataFormats.Rtf, false) as string; }
         catch (Exception) { }
         return RichText.Create(html, rtf);
     }

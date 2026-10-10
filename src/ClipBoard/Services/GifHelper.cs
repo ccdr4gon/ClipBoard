@@ -9,12 +9,15 @@ public static class GifHelper
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
     private const long MaxBytes = 10 * 1024 * 1024;
 
-    public static string? ReadGifUrlFromClipboard()
+    public static string? ReadGifUrlFromClipboard() => ReadGifUrlFromClipboard(Clipboard.GetDataObject);
+
+    /// <param name="getData">取本次剪贴板通知共用的数据对象；在 try 内调用，取失败照旧当作没有 GIF。</param>
+    public static string? ReadGifUrlFromClipboard(Func<IDataObject?> getData)
     {
         try
         {
             if (!Clipboard.ContainsData(DataFormats.Html)) return null;
-            var html = Clipboard.GetData(DataFormats.Html) as string;
+            var html = getData()?.GetData(DataFormats.Html, false) as string;
             return string.IsNullOrEmpty(html) ? null : ExtractGifUrl(html);
         }
         catch { return null; }
