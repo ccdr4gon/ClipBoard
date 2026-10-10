@@ -252,20 +252,31 @@ public partial class MainWindow : Window
         _historyTab = new TabItem { Header = MakeTabHeader("历史", "HISTORY"), Content = historyLb };
         Tabs.Items.Add(_historyTab);
 
-        var imageLb = BuildListBox(_imageView, isHistoryTab: true, folder: null);
-        ApplyTileStyle(imageLb, "ImageTileTemplate", "ImageTileStyle");
-        _imageTab = new TabItem { Header = MakeTabHeader("图片", "IMAGES"), Content = imageLb };
+        // 其余标签页的内容（列表、卡片模板、贴纸操作栏）等第一次选中时再建：打开面板只需要历史页。
+        _imageTab = LazyTab(MakeTabHeader("图片", "IMAGES"), null, () =>
+        {
+            var imageLb = BuildListBox(_imageView, isHistoryTab: true, folder: null);
+            ApplyTileStyle(imageLb, "ImageTileTemplate", "ImageTileStyle");
+            return imageLb;
+        });
         Tabs.Items.Add(_imageTab);
 
-        var emojiLb = BuildListBox(_emojiView, isHistoryTab: true, folder: null);
-        ApplyEmojiStyle(emojiLb);
-        _emojiTab = new TabItem { Header = MakeTabHeader("emoji", "EMOJI"), Content = emojiLb };
+        _emojiTab = LazyTab(MakeTabHeader("emoji", "EMOJI"), null, () =>
+        {
+            var emojiLb = BuildListBox(_emojiView, isHistoryTab: true, folder: null);
+            ApplyEmojiStyle(emojiLb);
+            return emojiLb;
+        });
         Tabs.Items.Add(_emojiTab);
 
         var defaultMemes = App.Favorites.EnsureDefaultMemeFolder();
-        var memeLb = BuildListBox(defaultMemes.Items, isHistoryTab: false, folder: defaultMemes);
-        ApplyTileStyle(memeLb, "MemeTileTemplate", "MemeTileStyle");
-        _memeTab = new TabItem { Header = MakeTabHeader("表情包", "MEMES"), Content = BuildMemeContent(defaultMemes, memeLb), Tag = defaultMemes };
+        _memeTab = LazyTab(MakeTabHeader("表情包", "MEMES"), defaultMemes, () =>
+        {
+            var memeLb = BuildListBox(defaultMemes.Items, isHistoryTab: false, folder: defaultMemes);
+            ApplyTileStyle(memeLb, "MemeTileTemplate", "MemeTileStyle");
+            return BuildMemeContent(defaultMemes, memeLb);
+        });
+        HookPendingMemeCounter(_memeTab, defaultMemes);
         _folderTabs[defaultMemes] = _memeTab;
         Tabs.Items.Add(_memeTab);
 
@@ -323,6 +334,7 @@ public partial class MainWindow : Window
                 if (_folderTabs.TryGetValue(f, out var ti))
                 {
                     Tabs.Items.Remove(ti);
+                    _pendingTabContent.Remove(ti);
                     _folderTabs.Remove(f);
                     _stickerTabViews.Remove(f.Id);
                 }
@@ -361,11 +373,41 @@ public partial class MainWindow : Window
         menu.Items.Add(delete);
         header.ContextMenu = menu;
 
-        var list = BuildListBoxForFolder(folder);
-        var ti = new TabItem { Header = header, Tag = folder, Content = folder.Kind == FolderKind.Meme ? BuildMemeContent(folder, list) : list };
+        var ti = LazyTab(header, folder, () =>
+        {
+            var list = BuildListBoxForFolder(folder);
+            return folder.Kind == FolderKind.Meme ? BuildMemeContent(folder, list) : list;
+        });
+        if (folder.Kind == FolderKind.Meme) HookPendingMemeCounter(ti, folder);
         _folderTabs[folder] = ti;
         return ti;
     }
+
+    // 标签页内容延迟创建：表头、Tag、表头菜单照常立即建好，内容在第一次选中（OnTabSelectionChanged 最前面）时才建。
+    // 必须用普通 TabItem：隐式样式按确切类型匹配，子类会丢掉 MainWindow.xaml 里的标签样式。
+    private readonly Dictionary<TabItem, Func<UIElement>> _pendingTabContent = new();
+
+    private TabItem LazyTab(object header, object? tag, Func<UIElement> build)
+    {
+        var ti = new TabItem { Header = header, Tag = tag };
+        _pendingTabContent[ti] = build;
+        return ti;
+    }
+
+    private void EnsureTabContent(TabItem? ti)
+    {
+        if (ti != null && _pendingTabContent.Remove(ti, out var build)) ti.Content = build();
+    }
+
+    // 表情包列表建好后由 BuildMemeContent 里的列表事件刷新计数；建好之前由这里代劳
+    // （例如从历史页「收藏到」表情包时，标题上的 NO. 要立即更新）。
+    private void HookPendingMemeCounter(TabItem ti, FavoriteFolder folder) =>
+        folder.Items.CollectionChanged += (_, _) =>
+        {
+            if (!_pendingTabContent.ContainsKey(ti)) return;
+            UpdateEntryCount();
+            UpdateTitleCounter();
+        };
 
     private ListBox BuildListBoxForCombined()
     {
@@ -1233,6 +1275,7 @@ public partial class MainWindow : Window
 
     private ListBox? GetActiveListBox()
     {
+        EnsureTabContent(Tabs.SelectedItem as TabItem);
         if (Tabs.SelectedItem is TabItem ti && ti.Content is ListBox lb) return lb;
         if (Tabs.SelectedItem is TabItem { Content: Panel panel }) return panel.Children.OfType<ListBox>().FirstOrDefault();
         return null;
@@ -1271,6 +1314,8 @@ public partial class MainWindow : Window
     private void OnTabSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (e.Source != Tabs) return;
+        // 先建内容：下面清空搜索框会触发 OnSearchChanged，它要能找到新标签页的列表并选中第一项。
+        EnsureTabContent(Tabs.SelectedItem as TabItem);
         SearchBox.Text = "";
         var lb = GetActiveListBox();
         if (lb != null && lb.ItemsSource != null)
