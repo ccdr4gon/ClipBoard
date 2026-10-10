@@ -49,6 +49,7 @@ internal static class Program
                     ("带格式文本重建编号、显示标记并提供纯文本粘贴", RichTextItems),
                     ("切换标签只替换选中状态变化的标签", TabsReplaceOnlyChanged),
                     ("面板隐藏时增量更新列表，与整表重建一致", HiddenIncrementalRows),
+                    ("右键预览图片显示原图", ImagePreviewDialog),
                     ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
@@ -350,6 +351,30 @@ internal static class Program
         var rebuilt = Rows();
         Check(rebuilt.All(r => !after.Contains(r)) && incremental.SequenceEqual(rebuilt.Select(Describe)), "增量更新的列表与整表重建的内容不一致");
         foreach (var item in App.History.Items.Where(i => i.Text?.StartsWith("增量条目") == true || i.Text == "隐藏时新增").ToArray()) App.History.Remove(item);
+    }
+    private static async Task ImagePreviewDialog()
+    {
+        var app = (App)App.Current!;
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)app.ApplicationLifetime!).MainWindow!;
+        App.History.Capture(new(Image: Png(9, 1800, 1000)));
+        var item = App.History.Items[0];
+        window.SelectView("history");
+        if (!window.IsVisible) app.ShowPanel();
+        await Task.Delay(100);
+        var row = window.GetVisualDescendants().OfType<ListBoxItem>().First(r => r.DataContext == item);
+        var menu = row.GetVisualDescendants().OfType<Control>().Select(c => c.ContextMenu).First(m => m != null)!;
+        MainWindow.EnsureMenuItems(menu);
+        menu.Items.OfType<MenuItem>().Single(m => m.Header as string == "预览").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(MenuItem.ClickEvent));
+        Window? dialog = null;
+        for (int i = 0; i < 40 && (dialog = window.OwnedWindows.FirstOrDefault()) == null; i++) await Task.Delay(50);
+        try
+        {
+            Check(dialog?.Content is Image { Source: Avalonia.Media.Imaging.Bitmap { PixelSize.Width: 1800 } }, "预览窗口没有显示原图");
+        }
+        finally { dialog?.Close(); }
+        for (int i = 0; i < 40 && Dialogs.HasModal(window); i++) await Task.Delay(50);
+        Check(!Dialogs.HasModal(window) && window.GetVisualDescendants().OfType<ListBox>().Single().IsEffectivelyEnabled, "关闭预览后主面板没有恢复");
+        App.History.Remove(item);
     }
     private static async Task SettingsDialogs(bool native)
     {

@@ -276,7 +276,9 @@ public sealed partial class MainWindow : Window
     {
         if (item.Kind == ClipKind.Image)
         {
-            using var full = item.ImageBlobName != null ? App.Persistence.LoadImageBlob(item.ImageBlobName) : null;
+            // 原图在后台线程解码（大截图要几十毫秒），回到界面线程再建窗口。
+            string? blob = item.ImageBlobName;
+            using var full = blob != null ? await Task.Run(() => App.Persistence.LoadImageBlob(blob)) : null;
             var window = new Window { Title = item.TitleOrUntitled, Width = 560, Height = 580, WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Content = new Image { Source = full ?? item.Image, Stretch = Stretch.Uniform, Margin = new Thickness(18) } };
             await Dialogs.ShowAsync(window, this); return;
