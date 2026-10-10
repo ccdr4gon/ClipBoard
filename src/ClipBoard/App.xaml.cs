@@ -60,17 +60,34 @@ public partial class App : Application
         };
         DiagLog.Write("startup", "exception handlers installed");
 
-        PersistedData persisted;
-        using (DiagLog.Phase("persistence-load"))
+        // 数据文件在后台线程反序列化（只产生普通对象，没有线程亲和），UI 线程同时先把托盘图标建出来——
+        // 托盘不依赖任何数据，图标因此更早出现。读完立即在后台并行解码缩略图（顶置、收藏、历史），
+        // 与建集合和主窗口重叠进行；结果在 thumbs-join 按原顺序赋回，那时 OnStartup 还没返回，
+        // 任何界面和第一帧都还没用到这些条目。
+        Persistence = BenchMode.Enabled ? new PersistenceService(BenchMode.ProfileDir) : new PersistenceService();
+        var persistence = Persistence;
+        var loading = System.Threading.Tasks.Task.Run(() =>
         {
-            Persistence = BenchMode.Enabled ? new PersistenceService(BenchMode.ProfileDir) : new PersistenceService();
-            persisted = Persistence.Load();
-            DiagLog.Write("startup", $"loaded history={persisted.History.Count} folders={persisted.Favorites?.Count ?? 0}");
+            PersistedData data;
+            using (DiagLog.Phase("persistence-load"))
+            {
+                data = persistence.Load();
+                DiagLog.Write("startup", $"loaded history={data.History.Count} folders={data.Favorites?.Count ?? 0}");
+            }
+            return (data, FavoritesStore.MediaPreload.Start(persistence, data, includeHistory: true));
+        });
+
+        if (!BenchMode.Enabled)
+        {
+            using (DiagLog.Phase("tray-icon"))
+            {
+                _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
+                EnsureTrayIconVisible();
+            }
         }
 
-        // 缩略图解码（顶置、收藏、历史）立即在后台线程并行开始，与下面建集合、托盘和主窗口重叠进行；
-        // 结果在 thumbs-join 按原顺序赋回，那时 OnStartup 还没返回，任何界面和第一帧都还没用到这些条目。
-        var media = FavoritesStore.MediaPreload.Start(Persistence, persisted, includeHistory: true);
+        WaitWithoutPumping(((IAsyncResult)loading).AsyncWaitHandle);
+        var (persisted, media) = loading.GetAwaiter().GetResult(); // 已完成，不再等待；异常照常抛回 UI 线程
 
         Settings = persisted.Settings;
         Favorites = new FavoritesStore(Persistence, persisted, loadMedia: false);
@@ -95,15 +112,6 @@ public partial class App : Application
                 LogStartup($"toggle -> {Settings.StartWithWindows}, verified={ok}");
             }
         };
-
-        if (!BenchMode.Enabled)
-        {
-            using (DiagLog.Phase("tray-icon"))
-            {
-                _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
-                EnsureTrayIconVisible();
-            }
-        }
 
         using (DiagLog.Phase("main-window"))
         {
