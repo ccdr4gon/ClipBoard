@@ -121,7 +121,7 @@ public sealed partial class MainWindow
     });
     private Task ClearHistoryAsync() => RunAsync(async _ =>
     {
-        if (await Dialogs.Confirm(this, "清空历史", "删除全部未置顶的历史？收藏和置顶内容会保留。")) App.History.Clear();
+        if (await Dialogs.Confirm(this, "清空历史", "删除全部未置顶的历史？收藏和置顶内容会保留。")) { App.History.Clear(); ReclaimRemovedThumbnails(); }
     });
     // 标签列表没变时只换掉选中状态变化的标签（每次粘贴、切换标签都会走到这里），收藏夹增删、改名、换类型才整排重建。
     // 换下的标签总是新建按钮而不是改样式类：点下的按钮有按压缩放动画，也带着焦点，原先它总被丢弃。

@@ -239,10 +239,14 @@ public sealed partial class MainWindow : Window
         {
             if (folder.Id == FavoritesStore.DefaultMemeFolderId) throw new InvalidOperationException("默认表情包标签不能删除。");
             if (!await Dialogs.Confirm(this, "删除标签", $"删除“{folder.Name}”及其 {folder.Items.Count} 张本地素材？")) return;
-            App.Favorites.DeleteFolder(folder); _folder = null; _mode = "history"; RenderToolbar();
+            App.Favorites.DeleteFolder(folder); _folder = null; _mode = "history"; RenderToolbar(); ReclaimRemovedThumbnails();
         }
         else if (!string.IsNullOrWhiteSpace(value[0])) App.Favorites.RenameFolder(folder, value[0].Trim());
     });
+    // 清空历史、删除标签会一次移除几十张缩略图（每张约 1 MB 原生 Skia 内存），它们要等下一次完整 GC 由终结器释放，
+    // 空闲时可能一直占着。等列表按原样重建、旧行脱离后，请求一次不阻塞界面的后台 GC；不主动释放任何位图。
+    private static void ReclaimRemovedThumbnails() =>
+        DispatcherTimer.RunOnce(() => GC.Collect(2, GCCollectionMode.Forced, blocking: false), TimeSpan.FromSeconds(1), DispatcherPriority.Background);
     private Task RenameItemAsync(ClipItem item) => RunAsync(async ct =>
     {
         await Media().EnsureAssetAsync(item, ct);
