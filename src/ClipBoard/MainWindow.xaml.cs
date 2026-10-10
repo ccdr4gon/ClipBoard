@@ -622,6 +622,13 @@ public partial class MainWindow : Window
         lb.ContextMenu.Closed += (s, _) =>
         {
             if (_openContextMenu == s) _openContextMenu = null;
+            if (s is not ContextMenu closedMenu) return;
+            // 菜单项的 Click 闭包引用着条目；关闭后清掉，刚「从历史删除」的条目和它的缩略图才能被回收。
+            // 放到 Background：先让关闭菜单的那次 Click（Render 优先级）跑完；快速右键另一行时菜单可能已重新打开，那就不清。
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (!closedMenu.IsOpen) closedMenu.Items.Clear();
+            }), System.Windows.Threading.DispatcherPriority.Background);
         };
         return lb;
     }
