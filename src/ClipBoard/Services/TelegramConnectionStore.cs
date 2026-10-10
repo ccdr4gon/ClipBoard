@@ -2,20 +2,24 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace ClipBoard.Services;
 
 public sealed record TelegramConnection(string Token = "", long OwnerUserId = 0, string MediaToolsDirectory = "");
 
-public sealed class TelegramConnectionStore(string rootDirectory)
+public sealed partial class TelegramConnectionStore(string rootDirectory)
 {
     private sealed record StoredConnection(string ProtectedToken, long OwnerUserId, string MediaToolsDirectory);
+    // 元数据在编译期生成（默认选项，文件内容不变）。data.json 也改用生成代码后，打开贴纸操作时不必再为这个小文件初始化反射序列化。
+    [JsonSerializable(typeof(StoredConnection))]
+    private sealed partial class StoredConnectionJsonContext : JsonSerializerContext { }
     private string FilePath => Path.Combine(rootDirectory, "telegram-connection.json");
 
     public TelegramConnection Load()
     {
         if (!File.Exists(FilePath)) return LoadEnvironment();
-        var stored = JsonSerializer.Deserialize<StoredConnection>(File.ReadAllText(FilePath))
+        var stored = JsonSerializer.Deserialize(File.ReadAllText(FilePath), StoredConnectionJsonContext.Default.StoredConnection)
             ?? throw new IOException("Telegram 配置文件无法读取。");
 #if AVALONIA
         string token = stored.ProtectedToken.Length == 0 ? "" : stored.ProtectedToken == "keychain:v1"
@@ -66,7 +70,7 @@ public sealed class TelegramConnectionStore(string rootDirectory)
             ProtectedData.Protect(Encoding.UTF8.GetBytes(connection.Token), null, DataProtectionScope.CurrentUser));
 #endif
         var stored = new StoredConnection(encrypted, connection.OwnerUserId, connection.MediaToolsDirectory);
-        File.WriteAllText(FilePath + ".tmp", JsonSerializer.Serialize(stored));
+        File.WriteAllText(FilePath + ".tmp", JsonSerializer.Serialize(stored, StoredConnectionJsonContext.Default.StoredConnection));
         File.Move(FilePath + ".tmp", FilePath, overwrite: true);
     }
 }

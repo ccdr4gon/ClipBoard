@@ -276,8 +276,13 @@ internal static class Program
         store.Save(new(FakeTelegram.Token, 99, Tools));
         Check(!File.ReadAllText(Path.Combine(f.Root, "telegram-connection.json")).Contains(FakeTelegram.Token), "Token 明文落盘");
         Check(store.Load().Token == FakeTelegram.Token && store.Load().OwnerUserId == 99, "连接配置不能恢复");
+        // 文件格式与旧版（反射、默认选项）写出的一致，旧版也能读取。
+        store.Save(new(FakeTelegram.Token, 7, Path.Combine(Tools, "中文 \"目录\"")));
+        string text = File.ReadAllText(Path.Combine(f.Root, "telegram-connection.json"));
+        Check(JsonSerializer.Serialize(JsonSerializer.Deserialize<LegacyConnection>(text)) == text && store.Load().MediaToolsDirectory.EndsWith("中文 \"目录\""), "连接配置文件格式改变");
         return Task.CompletedTask;
     }
+    private sealed record LegacyConnection(string ProtectedToken, long OwnerUserId, string MediaToolsDirectory);
     private static async Task ExistingExporter()
     {
         using var f = new Fixture(); await f.Add(Png(f.Root)); await f.Add(await Gif(f.Root)); await f.Add(Tgs(f.Root));
