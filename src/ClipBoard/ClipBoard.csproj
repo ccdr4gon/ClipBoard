@@ -11,6 +11,8 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Assets\tray.ico</ApplicationIcon>
     <LangVersion>latest</LangVersion>
+    <!-- 自定义入口：WPF 启动之前先处理退出标记和单实例锁，见 Program.cs。 -->
+    <StartupObject>ClipBoard.Program</StartupObject>
   </PropertyGroup>
 
   <!-- 发布性能设置（实测，见提交说明）：

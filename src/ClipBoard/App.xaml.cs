@@ -18,12 +18,7 @@ public partial class App : Application
     private ClipboardMonitor? _clipboardMonitor;
     private HotKeyService? _hotKey;
 
-    // 单实例保护：自启动 + 手动启动会跑出两个实例（双托盘图标、历史重复、持久化互相覆盖）。
-    // 持有字段引用防止被 GC；进程退出时由系统释放。
-    private static Mutex? _singleInstanceMutex;
-
-    /// <summary>本进程是否因为「已有实例在跑」而退出（任务计划定时重试的常态），用于让日志保持安静。</summary>
-    private static bool _isDuplicateInstance;
+    // 退出标记和单实例锁在 Program.Main 里、WPF 启动之前就处理完了：走到这里的一定是抢到锁的那个实例。
 
     /// <summary>退出原因，供 OnExit 记录。默认是未知——能看出是被外力干掉还是走了正常路径。</summary>
     private static string _exitReason = "unknown";
@@ -34,33 +29,6 @@ public partial class App : Application
     private void OnStartup(object sender, StartupEventArgs e)
     {
         DiagLog.Write("startup", "OnStartup entered");
-
-        // 保活任务每 15 分钟拉一次，它分不清「程序挂了」和「用户主动退出」。
-        // 所以用户点过退出就留个标记，保活启动时看到标记就安静地不启动；
-        // 而登录 / 手动启动会清掉标记——重新登录或亲手打开都意味着希望它回来。
-        bool byKeepAlive = e.Args.Contains(ScheduledTaskService.KeepAliveArgument, StringComparer.OrdinalIgnoreCase);
-        if (byKeepAlive && System.IO.File.Exists(QuitMarker))
-        {
-            DiagLog.Write("startup", "keep-alive launch, but user quit deliberately — staying out of the way");
-            _isDuplicateInstance = true; // 复用安静退出路径
-            Shutdown();
-            return;
-        }
-        // 基准模式与正在使用的实例并存：不碰退出标记，单实例锁用独立的名字。
-        if (!byKeepAlive && !BenchMode.Enabled) ClearQuitMarker();
-
-        _singleInstanceMutex = new Mutex(initiallyOwned: true,
-            BenchMode.Enabled ? $@"Local\ClipBoard.Bench.{Environment.ProcessId}" : @"Local\ClipBoard.SingleInstance", out bool createdNew);
-        if (!createdNew)
-        {
-            // 任务计划每 15 分钟重试一次，绝大多数会走到这里。保持安静：只留一行，
-            // 且不写 startup.log / OnExit，避免把真正有价值的启动记录冲掉。
-            _isDuplicateInstance = true;
-            DiagLog.Write("startup", "duplicate instance (app already running), exiting quietly");
-            Shutdown();
-            return;
-        }
-        DiagLog.Write("startup", "single-instance mutex acquired");
         DiagLog.LogEnvironment();
 
         DispatcherUnhandledException += (_, args) =>
@@ -238,46 +206,13 @@ public partial class App : Application
         // 「退出」就成了摆设——对剪贴板管理器来说尤其糟：
         // 用户明确退出后它又回来继续记录剪贴板、抢走 Ctrl+Alt+V。
         // 标记会在下次登录或手动启动时清除。
-        WriteQuitMarker();
+        Program.WriteQuitMarker();
         DiagLog.Write("exit", "user chose 退出 from the tray menu; keep-alive suppressed until next logon");
         Shutdown();
     }
 
-    /// <summary>用户主动退出的标记文件，让「退出」的意图能跨进程存活。</summary>
-    private static string QuitMarker => System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard", "user-quit.marker");
-
-    private static void WriteQuitMarker()
-    {
-        try
-        {
-            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(QuitMarker)!);
-            System.IO.File.WriteAllText(QuitMarker, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} 用户从托盘菜单退出\n");
-        }
-        catch (Exception ex)
-        {
-            DiagLog.Error("exit", "failed to write quit marker", ex);
-        }
-    }
-
-    private static void ClearQuitMarker()
-    {
-        try
-        {
-            if (!System.IO.File.Exists(QuitMarker)) return;
-            System.IO.File.Delete(QuitMarker);
-            DiagLog.Write("startup", "cleared previous quit marker (user-initiated or logon launch)");
-        }
-        catch (Exception ex)
-        {
-            DiagLog.Error("startup", "failed to clear quit marker", ex);
-        }
-    }
-
     private void OnExit(object sender, ExitEventArgs e)
     {
-        if (_isDuplicateInstance) return; // 定时重试的重复实例：不写日志、也没有资源要清理
-
         // 有这行才说明是正常退出；日志里只有启动没有这行 = 进程被杀或崩溃。
         // reason 能区分「用户点了退出」和「系统要求结束会话」——这正是之前查不出的那一点。
         DiagLog.Write("exit", $"OnExit code={e.ApplicationExitCode} reason={_exitReason} aliveFor={DiagLog.ElapsedMs}ms");
