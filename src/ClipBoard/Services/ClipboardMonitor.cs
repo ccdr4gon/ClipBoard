@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -179,25 +180,59 @@ public class ClipboardMonitor : IDisposable
             && src.Format != System.Windows.Media.PixelFormats.Pbgra32)
             return src;
 
-        int stride = src.PixelWidth * 4;
-        var pixels = new byte[stride * src.PixelHeight];
-        src.CopyPixels(pixels, stride, 0);
-
-        bool allAlphaZero = true;
-        for (int i = 3; i < pixels.Length; i += 4)
+        int width = src.PixelWidth, height = src.PixelHeight;
+        int stride = width * 4;
+        int size = checked(stride * height); // 超大图仍在这里抛出、被上层丢弃，与以前一致
+        // 按约 64KB 的条带读取（不进大对象堆）：有透明度的图读完第一条就返回，
+        // 只有确实要修正时才申请整图缓冲区，且放在非托管内存里，用完立即归还系统。
+        int rowsPerBlock = Math.Min(height, Math.Max(1, 65536 / stride));
+        var strip = new byte[stride * rowsPerBlock];
+        IntPtr pixels = IntPtr.Zero;
+        try
         {
-            if (pixels[i] != 0) { allAlphaZero = false; break; }
+            for (int y = 0; y < height; y += rowsPerBlock)
+            {
+                int rows = Math.Min(rowsPerBlock, height - y);
+                var block = strip.AsSpan(0, stride * rows);
+                src.CopyPixels(new Int32Rect(0, y, width, rows), strip, stride, 0);
+                if (HasAlpha(block)) return src;
+                SetOpaque(block);
+                if (pixels == IntPtr.Zero) pixels = Marshal.AllocHGlobal(size);
+                Marshal.Copy(strip, 0, pixels + y * stride, block.Length);
+            }
+            // Create 会把像素复制进自己的位图，之后即可释放缓冲区。
+            var fixed_ = BitmapSource.Create(width, height, src.DpiX, src.DpiY,
+                System.Windows.Media.PixelFormats.Bgra32, null, pixels, size, stride);
+            fixed_.Freeze();
+            return fixed_;
         }
+        finally
+        {
+            if (pixels != IntPtr.Zero) Marshal.FreeHGlobal(pixels);
+        }
+    }
 
-        if (!allAlphaZero) return src;
+    // 每个像素按小端 uint 读取（B,G,R,A），透明度是最高字节。
+    private static bool HasAlpha(ReadOnlySpan<byte> bgra)
+    {
+        var px = MemoryMarshal.Cast<byte, uint>(bgra);
+        var vectors = MemoryMarshal.Cast<uint, Vector<uint>>(px);
+        var any = Vector<uint>.Zero;
+        foreach (var v in vectors) any |= v;
+        if ((any & new Vector<uint>(0xFF000000u)) != Vector<uint>.Zero) return true;
+        for (int i = vectors.Length * Vector<uint>.Count; i < px.Length; i++)
+            if ((px[i] & 0xFF000000u) != 0) return true;
+        return false;
+    }
 
-        for (int i = 3; i < pixels.Length; i += 4)
-            pixels[i] = 255;
-
-        var fixed_ = BitmapSource.Create(src.PixelWidth, src.PixelHeight, src.DpiX, src.DpiY,
-            System.Windows.Media.PixelFormats.Bgra32, null, pixels, stride);
-        fixed_.Freeze();
-        return fixed_;
+    // 只在透明度全为 0 时调用：或上 0xFF000000 即把透明度置为 255，颜色不变。
+    private static void SetOpaque(Span<byte> bgra)
+    {
+        var px = MemoryMarshal.Cast<byte, uint>(bgra);
+        var vectors = MemoryMarshal.Cast<uint, Vector<uint>>(px);
+        var alpha = new Vector<uint>(0xFF000000u);
+        for (int i = 0; i < vectors.Length; i++) vectors[i] |= alpha;
+        for (int i = vectors.Length * Vector<uint>.Count; i < px.Length; i++) px[i] |= 0xFF000000u;
     }
 
     public void Dispose()

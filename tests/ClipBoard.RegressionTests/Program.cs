@@ -51,6 +51,7 @@ internal static class Program
             ("保留格式写入 HTML 和 RTF，纯文本只写文字", RichDataObjectFormats),
             ("格式文件随条目保存、共享和清理", RichBlobLifecycle),
             ("同一文字再次复制带上格式时补到原条目", RichAddedToExistingText),
+            ("截图透明度全为 0 时补成不透明，其余图片原样返回", ClipboardAlphaFix),
         ];
         int failures = 0;
         foreach (var (name, test) in tests)
@@ -355,6 +356,38 @@ internal static class Program
         f.History.AddText("同一段文字", RichText.Create("<p>同一段<b>文字</b></p>", null));
         Check(f.History.Items.Count == 1 && f.History.Items[0].HasRichText, "格式没有补到原条目");
         Check(RichText.Create("纯文本", "不是 RTF") == null, "无效格式被保存");
+    }
+
+    private static void ClipboardAlphaFix()
+    {
+        var fix = typeof(ClipboardMonitor).GetMethod("FixAlphaChannel", BindingFlags.Static | BindingFlags.NonPublic)!;
+        BitmapSource Run(BitmapSource src) => (BitmapSource)fix.Invoke(null, [src])!;
+        // 宽度不是向量长度的整数倍、高度跨多个读取条带且最后一条不满。
+        const int width = 333, height = 200, stride = width * 4;
+        var pixels = new byte[stride * height];
+        new Random(7).NextBytes(pixels);
+        for (int i = 3; i < pixels.Length; i += 4) pixels[i] = 0;
+        foreach (var format in new[] { PixelFormats.Bgra32, PixelFormats.Pbgra32 })
+        {
+            var src = BitmapSource.Create(width, height, 120, 144, format, null, pixels, stride);
+            var result = Run(src);
+            var actual = new byte[pixels.Length];
+            result.CopyPixels(actual, stride, 0);
+            var expected = (byte[])pixels.Clone();
+            for (int i = 3; i < expected.Length; i += 4) expected[i] = 255;
+            Check(result.Format == PixelFormats.Bgra32 && result.IsFrozen && result.DpiX == 120 && result.DpiY == 144
+                && result.PixelWidth == width && result.PixelHeight == height, $"{format} 修正后的格式、尺寸或 DPI 不对");
+            Check(actual.AsSpan().SequenceEqual(expected), $"{format} 修正后的像素不对");
+        }
+        // 只有最后一个像素带透明度（前面的条带都是 0）：保持原图。
+        var lastAlpha = (byte[])pixels.Clone();
+        lastAlpha[^1] = 1;
+        var partial = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, lastAlpha, stride);
+        Check(ReferenceEquals(Run(partial), partial), "带透明度的图片被改写");
+        var opaque = Image(64, 64);
+        Check(ReferenceEquals(Run(opaque), opaque), "不透明图片被改写");
+        var bgr = BitmapSource.Create(4, 4, 96, 96, PixelFormats.Bgr32, null, new byte[64], 16);
+        Check(ReferenceEquals(Run(bgr), bgr), "其他像素格式被改写");
     }
 
     private static byte[] ReadHGlobal(System.Windows.DataObject data, string format)
