@@ -50,11 +50,11 @@
 
 ### Windows
 
-`ClipBoard-v2.0.1-win-x64.exe` — **自包含单文件**，双击即用。建议放到 `%LOCALAPPDATA%\Programs\ClipBoard\ClipBoard.exe`；首次运行会自动注册开机启动（可在设置里关闭）。
+`ClipBoard-v2.1.0-win-x64.exe` — **自包含单文件**，双击即用。建议放到 `%LOCALAPPDATA%\Programs\ClipBoard\ClipBoard.exe`；首次运行会自动注册开机启动（可在设置里关闭）。
 
 ### macOS
 
-要求 macOS 13+。M 系列下载 `ClipBoard-2.0.1-macos-arm64.zip`，Intel 下载 `ClipBoard-2.0.1-macos-x64.zip`。
+要求 macOS 13+。M 系列下载 `ClipBoard-2.1.0-macos-arm64.zip`，Intel 下载 `ClipBoard-2.1.0-macos-x64.zip`。
 
 1. 双击 ZIP 解压，用访达把 `ClipBoard.app` 拖入“应用程序”；更新时选“替换”。不要直接在“下载”里运行，反复解压会生成 `ClipBoard 2.app`… 多个副本，授权会对不上。
 2. 首次打开若提示无法验证开发者，到“系统设置 → 隐私与安全性”点“仍要打开”。
