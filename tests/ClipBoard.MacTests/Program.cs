@@ -271,7 +271,16 @@ internal static class Program
         var row = list.GetVisualDescendants().OfType<ListBoxItem>().First(r => r.DataContext == item);
         Check(row.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "格式"), "带格式条目没有显示标记");
         var menu = row.GetVisualDescendants().OfType<Control>().Select(c => c.ContextMenu).First(m => m != null)!;
+        Check(menu.Items.Count == 0, "右键菜单项应在第一次打开时才生成");
+        MainWindow.EnsureMenuItems(menu); // 菜单项在打开时生成；测试不弹出真实菜单
         Check(menu.Items.OfType<MenuItem>().Any(m => m.Header as string == "粘贴为纯文本"), "右键菜单缺少纯文本粘贴");
+        // 真实的右键路径：ContextRequested 先触发 Opening 生成菜单项再弹出（无头平台，不会出现真实窗口）。
+        var other = list.GetVisualDescendants().OfType<ListBoxItem>().First(r => r.DataContext != item)
+            .GetVisualDescendants().OfType<Control>().First(c => c.ContextMenu != null);
+        other.RaiseEvent(new ContextRequestedEventArgs());
+        Check(other.ContextMenu!.IsOpen && other.ContextMenu.Items.OfType<MenuItem>().Any(m => m.Header as string == "复制")
+            && other.ContextMenu.Items.OfType<MenuItem>().Last().Header as string == "收藏到", "右键打开的菜单没有生成菜单项");
+        other.ContextMenu.Close();
         App.History.Remove(item);
         Check(!File.Exists(App.Persistence.GetBlobPath(item.RichBlobName!)), "删除条目后格式文件未清理");
     }

@@ -112,42 +112,58 @@ public sealed partial class MainWindow : Window
     }
     private void AttachItemActions(Control card, ClipItem item)
     {
+        // 菜单项等第一次打开时再生成：右键 / Control+单击 / 菜单键都会先触发 Opening 再弹出。原先每行一生成就建好
+        // 全部菜单项（每个收藏夹一项），几百行就是几千个 MenuItem，而绝大多数菜单从不打开。
+        // 内容仍按生成这一行时的状态决定，与原先一致。
         var menu = new ContextMenu();
-        if (item.HasRichText)
+        var current = _folder; bool rich = item.HasRichText, pinned = item.IsPinned;
+        var targets = App.Favorites.Folders.Where(f => f != current).Select(f => (Folder: f, f.Name)).ToArray();
+        bool filled = false;
+        void Fill()
         {
-            AddMenu(menu, "粘贴（保留格式）", () => CopyAsync(item, true));
-            AddMenu(menu, "粘贴为纯文本", () => CopyAsync(item, true, plainText: true));
-            AddMenu(menu, "复制为纯文本", () => CopyAsync(item, false, plainText: true));
+            if (filled) return;
+            filled = true;
+            if (rich)
+            {
+                AddMenu(menu, "粘贴（保留格式）", () => CopyAsync(item, true));
+                AddMenu(menu, "粘贴为纯文本", () => CopyAsync(item, true, plainText: true));
+                AddMenu(menu, "复制为纯文本", () => CopyAsync(item, false, plainText: true));
+            }
+            else AddMenu(menu, "粘贴到原应用", () => CopyAsync(item, true));
+            AddMenu(menu, "复制", () => CopyAsync(item, false));
+            if (item.Kind is ClipKind.Image or ClipKind.Gif or ClipKind.VideoSticker or ClipKind.VectorSticker)
+                AddMenu(menu, "预览", () => PreviewAsync(item));
+            if (current != null)
+            {
+                AddMenu(menu, "编辑图片 / 动画", () => EditAsync(item));
+                AddMenu(menu, "替换素材", () => ReplaceAsync(item));
+                AddMenu(menu, "恢复原件", () => RunAsync(async ct => { var replacement = await Media().RestoreAsync(item, ct); Library().ReplaceLocal(_folder!, item, replacement); }));
+                AddMenu(menu, "修改标题 / Emoji", () => RenameItemAsync(item));
+                AddMenu(menu, "向前移动", () => { int index = _folder!.Items.IndexOf(item); if (index > 0) _folder.Items.Move(index, index - 1); App.Favorites.Save(); return Task.CompletedTask; });
+                AddMenu(menu, "移除", () => { App.Favorites.RemoveFavorite(item); return Task.CompletedTask; });
+            }
+            else
+            {
+                AddMenu(menu, pinned ? "取消置顶" : "置顶", () => { if (item.IsPinned) App.Favorites.UnpinHistory(item, App.History); else App.Favorites.PinHistory(item, App.History); return Task.CompletedTask; });
+                AddMenu(menu, "删除", () => { if (item.IsPinned) App.Favorites.RemovePinnedHistory(item); else App.History.Remove(item); return Task.CompletedTask; });
+            }
+            var collect = new MenuItem { Header = "收藏到" };
+            foreach (var (target, name) in targets)
+            {
+                var option = new MenuItem { Header = name };
+                option.Click += async (_, _) => await RunAsync(_ => { App.Favorites.AddToFolder(item, target); return Task.CompletedTask; });
+                collect.Items.Add(option);
+            }
+            menu.Items.Add(collect);
         }
-        else AddMenu(menu, "粘贴到原应用", () => CopyAsync(item, true));
-        AddMenu(menu, "复制", () => CopyAsync(item, false));
-        if (item.Kind is ClipKind.Image or ClipKind.Gif or ClipKind.VideoSticker or ClipKind.VectorSticker)
-            AddMenu(menu, "预览", () => PreviewAsync(item));
-        if (_folder != null)
-        {
-            AddMenu(menu, "编辑图片 / 动画", () => EditAsync(item));
-            AddMenu(menu, "替换素材", () => ReplaceAsync(item));
-            AddMenu(menu, "恢复原件", () => RunAsync(async ct => { var replacement = await Media().RestoreAsync(item, ct); Library().ReplaceLocal(_folder!, item, replacement); }));
-            AddMenu(menu, "修改标题 / Emoji", () => RenameItemAsync(item));
-            AddMenu(menu, "向前移动", () => { int index = _folder!.Items.IndexOf(item); if (index > 0) _folder.Items.Move(index, index - 1); App.Favorites.Save(); return Task.CompletedTask; });
-            AddMenu(menu, "移除", () => { App.Favorites.RemoveFavorite(item); return Task.CompletedTask; });
-        }
-        else
-        {
-            AddMenu(menu, item.IsPinned ? "取消置顶" : "置顶", () => { if (item.IsPinned) App.Favorites.UnpinHistory(item, App.History); else App.Favorites.PinHistory(item, App.History); return Task.CompletedTask; });
-            AddMenu(menu, "删除", () => { if (item.IsPinned) App.Favorites.RemovePinnedHistory(item); else App.History.Remove(item); return Task.CompletedTask; });
-        }
-        var collect = new MenuItem { Header = "收藏到" };
-        foreach (var folder in App.Favorites.Folders.Where(f => f != _folder))
-        {
-            var target = folder; var option = new MenuItem { Header = target.Name };
-            option.Click += async (_, _) => await RunAsync(_ => { App.Favorites.AddToFolder(item, target); return Task.CompletedTask; });
-            collect.Items.Add(option);
-        }
-        menu.Items.Add(collect); card.ContextMenu = menu;
+        menu.Tag = (Action)Fill;
+        menu.Opening += (_, _) => Fill(); // ContextMenu.Open() 不触发 Opening；这类菜单只由 ContextRequested 打开
+        card.ContextMenu = menu;
         menu.Opened += (_, _) => _contextOpen = true;
         menu.Closed += (_, _) => _contextOpen = false;
     }
+    /// <summary>不弹出菜单就生成菜单项（测试读取菜单内容用）。</summary>
+    internal static void EnsureMenuItems(ContextMenu menu) => (menu.Tag as Action)?.Invoke();
     private static void AddMenu(ContextMenu menu, string title, Func<Task> action)
     {
         var item = new MenuItem { Header = title }; item.Click += async (_, _) => await action(); menu.Items.Add(item);
