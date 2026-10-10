@@ -1364,8 +1364,9 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    // 基准模式与 diag.log 一样写进基准目录，不往正在使用的实例的数据目录里追加。
     private static readonly string LogFile = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard", "debug.log");
+        BenchMode.Root ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard"), "debug.log");
     private static void Log(string msg)
     {
         try { System.IO.File.AppendAllText(LogFile, $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}"); } catch {}
