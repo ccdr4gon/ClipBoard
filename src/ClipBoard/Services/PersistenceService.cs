@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 #if AVALONIA
 using BitmapSource = Avalonia.Media.Imaging.Bitmap;
 using BitmapImage = Avalonia.Media.Imaging.Bitmap;
@@ -15,10 +16,12 @@ public class PersistenceService
     private readonly string _root;
     private readonly string _dataFile;
     private readonly string _blobsDir;
+    // 元数据由编译期生成的 PersistedDataJsonContext 提供，启动时不再反射建模型、发射访问器；选项本身与以前完全相同。
     private readonly JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented = false,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        TypeInfoResolver = PersistedDataJsonContext.Default,
     };
 
     private System.Threading.Timer? _debounce;
@@ -256,7 +259,7 @@ public class PersistenceService
     public string SaveRichBlob(RichContent rich)
     {
         var name = Guid.NewGuid().ToString("N") + ".rich.json";
-        File.WriteAllText(Path.Combine(_blobsDir, name), JsonSerializer.Serialize(rich));
+        File.WriteAllText(Path.Combine(_blobsDir, name), JsonSerializer.Serialize(rich, RichContentJsonContext.Default.RichContent));
         return name;
     }
 
@@ -266,8 +269,17 @@ public class PersistenceService
         {
             if (string.IsNullOrEmpty(name)) return null;
             var full = GetBlobPath(name);
-            return File.Exists(full) ? JsonSerializer.Deserialize<RichContent>(File.ReadAllText(full)) : null;
+            return File.Exists(full) ? JsonSerializer.Deserialize(File.ReadAllText(full), RichContentJsonContext.Default.RichContent) : null;
         }
         catch { return null; }
     }
 }
+
+// data.json：与 _jsonOpts 相同的选项（不缩进、忽略 null），覆盖 PersistedData 引用到的全部类型。
+[JsonSourceGenerationOptions(WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(PersistedData))]
+internal sealed partial class PersistedDataJsonContext : JsonSerializerContext { }
+
+// 格式文件一直用默认选项写（保留 "Rtf":null），单独一个上下文，字节不变。
+[JsonSerializable(typeof(RichContent))]
+internal sealed partial class RichContentJsonContext : JsonSerializerContext { }

@@ -53,6 +53,7 @@ internal static class Program
             ("同一文字再次复制带上格式时补到原条目", RichAddedToExistingText),
             ("截图透明度全为 0 时补成不透明，其余图片原样返回", ClipboardAlphaFix),
             ("图片签名的 XXH64 与标准结果一致且不受分块影响", ImageSigHash),
+            ("data.json 和格式文件的字节与旧版一致，旧文件各种编码都能读回", PersistenceFormatUnchanged),
         ];
         int failures = 0;
         foreach (var (name, test) in tests)
@@ -426,6 +427,104 @@ internal static class Program
         Check(ReferenceEquals(Run(opaque), opaque), "不透明图片被改写");
         var bgr = BitmapSource.Create(4, 4, 96, 96, PixelFormats.Bgr32, null, new byte[64], 16);
         Check(ReferenceEquals(Run(bgr), bgr), "其他像素格式被改写");
+    }
+
+    // 旧版用的反射序列化选项；新代码写出的字节必须与它完全一致，旧版也能照常读取。
+    private static readonly JsonSerializerOptions LegacyDataOptions = new()
+    {
+        WriteIndented = false,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private static PersistedData SampleData()
+    {
+        var folderId = Guid.NewGuid();
+        var sticker = new StickerAsset
+        {
+            OriginalBlobName = "a.webp", OriginalFormat = StickerFormat.Webp, WorkingBlobName = "b.png", Format = StickerFormat.Png,
+            Emojis = ["🙂", "👨‍👩‍👧‍👦"], DurationSeconds = 1.2345678901234567, Revision = 3,
+            SourceSetName = "Pack", SourceFileId = "f", SourceUniqueId = "u", PublishedFileId = "p", PublishedUniqueId = "pu",
+            PublishedRevision = 2, PendingFileId = "pf", PendingUniqueId = "pq", PendingRevision = 4,
+        };
+        return new PersistedData
+        {
+            Folders =
+            [
+                new FavoriteFolder
+                {
+                    Name = "表情 <&>'\"\\", Order = 2, Kind = FolderKind.Meme, Telegram = new TelegramPackBinding
+                    {
+                        SourceSetName = "src", SetName = "set_by_bot", BotId = long.MaxValue, OwnerUserId = 42, PublishedTitle = "标题",
+                        DeletedFileIds = ["d1", "d2"], PublishedOrder = [Guid.NewGuid()],
+                        PendingMutation = new TelegramPackMutation { Kind = "replace", ItemIds = [Guid.NewGuid()], Formats = ["static"], BeforeUniqueIds = ["x"], OldUniqueId = "old" },
+                    },
+                },
+                new FavoriteFolder { Id = folderId, Name = "", Order = 0, Telegram = new TelegramPackBinding() },
+            ],
+            PinnedHistory = [new ClipItem { Kind = ClipKind.Image, ImageBlobName = "i.png", PixelW = 1, PixelH = 2, IsPinned = true,
+                Timestamp = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Local).AddTicks(1234567) }],
+            Favorites =
+            [
+                new ClipItem { Kind = ClipKind.Gif, GifBlobName = "g.gif", ImageBlobName = "p.png", FolderId = folderId, Title = "收藏 ✓", Sticker = sticker, Timestamp = DateTime.UtcNow },
+                new ClipItem { Kind = ClipKind.VectorSticker, FolderId = folderId, Sticker = new StickerAsset(), Timestamp = DateTime.SpecifyKind(DateTime.Now, DateTimeKind.Unspecified) },
+            ],
+            History =
+            [
+                new ClipItem { Kind = ClipKind.Text, Text = "中文 😀 \uD800 tab\t \"quote\" <b>&amp;</b> \u0001 \u2028", RichBlobName = "r.rich.json" },
+                new ClipItem { Kind = ClipKind.Files, FilePaths = [@"C:\路径\a b.txt", ""] },
+                new ClipItem { Kind = ClipKind.Files, FilePaths = [] },
+                new ClipItem { Kind = ClipKind.VideoSticker, Title = "" },
+            ],
+            Settings = new AppSettings { StartWithWindows = false, ShowInvisibleChars = true },
+        };
+    }
+
+    private static void PersistenceFormatUnchanged()
+    {
+        using var f = new Fixture();
+        var sample = SampleData();
+        byte[] legacy = JsonSerializer.SerializeToUtf8Bytes(sample, LegacyDataOptions);
+        f.Persistence.SaveDebounced(sample);
+        f.Persistence.FlushSync();
+        string dataFile = Path.Combine(f.Root, "data.json");
+        Check(File.ReadAllBytes(dataFile).AsSpan().SequenceEqual(legacy), "data.json 的字节与旧版不一致");
+
+        // 旧版（以及手工编辑）可能留下 BOM、UTF-16、非法 UTF-8；读回结果必须与旧读法（ReadAllText + 反射）相同。
+        byte[] invalidUtf8 = Encoding.UTF8.GetBytes("{\"History\":[{\"Id\":\"00000000-0000-0000-0000-000000000001\",\"Kind\":0,\"Text\":\"a\u00FFb\",\"Timestamp\":\"2026-01-01T00:00:00\"}]}");
+        int ff = invalidUtf8.AsSpan().IndexOf(new byte[] { 0xC3, 0xBF });
+        invalidUtf8 = [.. invalidUtf8[..ff], 0xFF, .. invalidUtf8[(ff + 2)..]];
+        var variants = new (string Name, byte[] Bytes, int Count)[]
+        {
+            ("UTF-8", legacy, 4),
+            ("UTF-8 BOM", [0xEF, 0xBB, 0xBF, .. legacy], 4),
+            ("UTF-16 BOM", [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(Encoding.UTF8.GetString(legacy))], 4),
+            ("非法 UTF-8", invalidUtf8, 1),
+        };
+        foreach (var (name, bytes, count) in variants)
+        {
+            File.WriteAllBytes(dataFile, bytes);
+            var loaded = f.Persistence.Load();
+            var expected = JsonSerializer.Deserialize<PersistedData>(File.ReadAllText(dataFile), LegacyDataOptions)!;
+            Check(loaded.History.Count == count && JsonSerializer.SerializeToUtf8Bytes(loaded, LegacyDataOptions).AsSpan()
+                .SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(expected, LegacyDataOptions)), $"{name} 的 data.json 读回结果与旧版不同");
+        }
+        Check(f.Persistence.Load().History.Single().Text == "a\uFFFDb", "非法 UTF-8 没有像以前一样替换成 U+FFFD");
+        foreach (var text in new[] { "", " \r\n\t" })
+        {
+            File.WriteAllText(dataFile, text);
+            Check(f.Persistence.Load().History.Count == 0, "空白 data.json 没有读成空数据");
+        }
+
+        RichContent[] samples = [new(null, null), new("<p>中文 😀 &amp; 'x' \"y\"</p>", null), new(null, @"{\rtf1 \'d6\'d0}"), new("<b>b</b>", @"{\rtf1 x}")];
+        foreach (var rich in samples)
+        {
+            var name = f.Persistence.SaveRichBlob(rich);
+            var path = f.Persistence.GetBlobPath(name);
+            Check(File.ReadAllBytes(path).AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(rich)), "格式文件的字节与旧版不一致");
+            Check(f.Persistence.LoadRichBlob(name) == rich, "格式文件读回不一致");
+            File.WriteAllBytes(path, [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(JsonSerializer.Serialize(rich))]);
+            Check(f.Persistence.LoadRichBlob(name) == rich, "UTF-16 格式文件读回不一致");
+        }
     }
 
     private static byte[] ReadHGlobal(System.Windows.DataObject data, string format)
