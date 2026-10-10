@@ -43,17 +43,37 @@ internal static class MacNative
         try { return Call(Class("NSData"), "dataWithBytes:length:", pinned.AddrOfPinnedObject(), bytes.Length); }
         finally { pinned.Free(); }
     }
+    // 剪贴板每 500 ms 轮询一次：常用的类和选择器第一次用到时缓存，不再每次按字符串查找。
+    // 选择器注册后永久有效；类只在找到后才缓存（框架加载前 objc_getClass 返回 0，见 MacLogin）。
+    internal static nint Sel(ref nint cache, string name)
+    {
+        var value = cache;
+        if (value == 0) cache = value = sel_registerName(name);
+        return value;
+    }
+    internal static nint Cls(ref nint cache, string name)
+    {
+        var value = cache;
+        if (value == 0 && (value = objc_getClass(name)) != 0) cache = value;
+        return value;
+    }
+    internal static nint Send(nint obj, nint selector) => Send0(obj, selector);
+    private static nint s_poolClass, s_new, s_drain, s_workspaceClass, s_sharedWorkspace, s_frontmostApplication, s_processIdentifier;
     internal sealed class Pool : IDisposable
     {
-        private readonly nint _pool = Call(Class("NSAutoreleasePool"), "new");
-        public void Dispose() => Call(_pool, "drain");
+        private readonly nint _pool = Send0(Cls(ref s_poolClass, "NSAutoreleasePool"), Sel(ref s_new, "new"));
+        public void Dispose() => Send0(_pool, Sel(ref s_drain, "drain"));
     }
 
     internal static int ForegroundPid()
     {
         using var pool = new Pool();
-        return (int)Call(Call(Call(Class("NSWorkspace"), "sharedWorkspace"), "frontmostApplication"), "processIdentifier");
+        return ForegroundPidInPool();
     }
+    /// <summary>调用方须已持有自动释放池。</summary>
+    internal static int ForegroundPidInPool() =>
+        (int)Send0(Send0(Send0(Cls(ref s_workspaceClass, "NSWorkspace"), Sel(ref s_sharedWorkspace, "sharedWorkspace")),
+            Sel(ref s_frontmostApplication, "frontmostApplication")), Sel(ref s_processIdentifier, "processIdentifier"));
     private static nint SharedApplication => Call(Class("NSApplication"), "sharedApplication");
 
     internal enum PasteResult { Pasted, NotTrusted, NoTarget, NotActivated }

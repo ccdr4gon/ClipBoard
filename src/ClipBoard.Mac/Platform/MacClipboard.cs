@@ -8,8 +8,11 @@ public sealed record ClipboardContent(string? Text = null, string[]? Files = nul
 
 internal static class MacClipboard
 {
-    private static nint Board => Call(Class("NSPasteboard"), "generalPasteboard");
-    public static long Sequence { get { using var pool = new Pool(); return (long)Call(Board, "changeCount"); } }
+    private static nint s_boardClass, s_generalPasteboard, s_changeCount;
+    private static nint Board => Send(Cls(ref s_boardClass, "NSPasteboard"), Sel(ref s_generalPasteboard, "generalPasteboard"));
+    public static long Sequence { get { using var pool = new Pool(); return SequenceInPool; } }
+    /// <summary>调用方须已持有自动释放池。</summary>
+    internal static long SequenceInPool => (long)Send(Board, Sel(ref s_changeCount, "changeCount"));
     public static ClipboardContent? Read()
     {
         using var pool = new Pool();

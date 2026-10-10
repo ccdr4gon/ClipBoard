@@ -65,9 +65,13 @@ public partial class App : Application
     {
         try
         {
-            int pid = MacNative.ForegroundPid();
-            if (pid > 0 && pid != Environment.ProcessId) PreviousApp = pid;
-            long sequence = MacClipboard.Sequence;
+            long sequence;
+            using (new MacNative.Pool()) // 两次查询共用一个自动释放池
+            {
+                int pid = MacNative.ForegroundPidInPool();
+                if (pid > 0 && pid != Environment.ProcessId) PreviousApp = pid;
+                sequence = MacClipboard.SequenceInPool;
+            }
             if (sequence == _sequence) return;
             _sequence = sequence;
             var content = MacClipboard.Read();
