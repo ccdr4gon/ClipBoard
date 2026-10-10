@@ -282,6 +282,7 @@ public partial class MainWindow : Window
 
     private static void ApplyTileStyle(ListBox lb, string templateKey, string styleKey)
     {
+        lb.ItemTemplateSelector = null;
         lb.ItemTemplate = (DataTemplate)Application.Current.Resources[templateKey];
         lb.ItemContainerStyle = (Style)Application.Current.Resources[styleKey];
         lb.ItemsPanel = (ItemsPanelTemplate)Application.Current.Resources["WrapPanelTemplate"];
@@ -292,6 +293,7 @@ public partial class MainWindow : Window
 
     private static void ApplyEmojiStyle(ListBox lb)
     {
+        lb.ItemTemplateSelector = null;
         lb.ItemTemplate = (DataTemplate)Application.Current.Resources["EmojiTileTemplate"];
         lb.ItemContainerStyle = (Style)Application.Current.Resources["EmojiTileStyle"];
         lb.ItemsPanel = (ItemsPanelTemplate)Application.Current.Resources["WrapPanelTemplate"];
@@ -476,7 +478,8 @@ public partial class MainWindow : Window
     {
         var lb = new ListBox
         {
-            ItemTemplate = (DataTemplate)Application.Current.Resources["ClipItemTemplate"],
+            // 按类型选行模板（见 ClipKindTemplateSelector）；卡片 / emoji 列表随后在 Apply*Style 里换成自己的模板。
+            ItemTemplateSelector = (DataTemplateSelector)Application.Current.Resources["ClipItemTemplateSelector"],
             ItemContainerStyle = (Style)Application.Current.Resources["ClipListItemStyle"],
             ItemsSource = source,
             BorderThickness = new Thickness(0),

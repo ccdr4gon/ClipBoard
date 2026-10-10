@@ -144,6 +144,162 @@
         </DockPanel>
     </DataTemplate>
 
+    <!-- ── 按类型拆分的历史行模板 ──
+         上面的 ClipItemTemplate 每行都把四种内容全建出来再隐藏三种；下面四个模板只建本类型那一种，
+         由 ClipItemTemplateSelector 按 Kind 选择（未知类型仍用 ClipItemTemplate）。
+         外层（序号、顶置、格式标记、时间）与 ClipItemTemplate 逐字相同，改动时五处必须一起改。 -->
+    <DataTemplate x:Key="ClipTextRowTemplate" DataType="{x:Type m:ClipItem}">
+        <DockPanel LastChildFill="True">
+            <TextBlock DockPanel.Dock="Left" Width="22" TextAlignment="Right"
+                       FontFamily="{StaticResource Mono}" FontSize="10"
+                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                       Text="{Binding (ItemsControl.AlternationIndex),
+                              RelativeSource={RelativeSource AncestorType=ListBoxItem},
+                              Converter={StaticResource IndexConv}}"/>
+
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
+                <TextBlock Text="📌" Foreground="{StaticResource Accent}" Margin="0,0,6,0"
+                           Visibility="{Binding PinVisibility}" FontSize="11"/>
+                <Border Visibility="{Binding RichVisibility}" Margin="0,0,7,0" Padding="4,0"
+                        CornerRadius="3" BorderThickness="1" BorderBrush="{StaticResource Divider}"
+                        VerticalAlignment="Center"
+                        ToolTip="带格式（列表编号、粗体等）。Enter / 单击保留格式粘贴，Shift+Enter / Shift+单击粘贴为纯文本">
+                    <TextBlock Text="格式" FontSize="9.5" Foreground="{StaticResource Accent}"/>
+                </Border>
+                <TextBlock FontFamily="{StaticResource Mono}" FontSize="10.5"
+                           Foreground="{StaticResource Muted}" Text="{Binding TimeLabel}"/>
+            </StackPanel>
+
+            <Grid Margin="14,0,0,0">
+                <TextBlock FontFamily="{StaticResource Serif}" FontSize="13.5"
+                           Foreground="{StaticResource Ink}"
+                           TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"
+                           VerticalAlignment="Center"
+                           v:InvisibleTextBlock.Source="{Binding Text}"
+                           v:InvisibleTextBlock.ShowInvisible="{Binding ShowInvisibleChars, Source={x:Static app:App.Settings}}"/>
+            </Grid>
+        </DockPanel>
+    </DataTemplate>
+
+    <DataTemplate x:Key="ClipImageRowTemplate" DataType="{x:Type m:ClipItem}">
+        <DockPanel LastChildFill="True">
+            <TextBlock DockPanel.Dock="Left" Width="22" TextAlignment="Right"
+                       FontFamily="{StaticResource Mono}" FontSize="10"
+                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                       Text="{Binding (ItemsControl.AlternationIndex),
+                              RelativeSource={RelativeSource AncestorType=ListBoxItem},
+                              Converter={StaticResource IndexConv}}"/>
+
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
+                <TextBlock Text="📌" Foreground="{StaticResource Accent}" Margin="0,0,6,0"
+                           Visibility="{Binding PinVisibility}" FontSize="11"/>
+                <Border Visibility="{Binding RichVisibility}" Margin="0,0,7,0" Padding="4,0"
+                        CornerRadius="3" BorderThickness="1" BorderBrush="{StaticResource Divider}"
+                        VerticalAlignment="Center"
+                        ToolTip="带格式（列表编号、粗体等）。Enter / 单击保留格式粘贴，Shift+Enter / Shift+单击粘贴为纯文本">
+                    <TextBlock Text="格式" FontSize="9.5" Foreground="{StaticResource Accent}"/>
+                </Border>
+                <TextBlock FontFamily="{StaticResource Mono}" FontSize="10.5"
+                           Foreground="{StaticResource Muted}" Text="{Binding TimeLabel}"/>
+            </StackPanel>
+
+            <Grid Margin="14,0,0,0">
+                <!-- 列表图片直接显示预览，不依赖外部列表标记。仅在预览中裁切，原图不变。 -->
+                    <DockPanel x:Name="HistoryImagePreview">
+                        <Border DockPanel.Dock="Left" Width="184" Height="107"
+                                Margin="0,0,12,0" Padding="3" CornerRadius="4"
+                                Background="{StaticResource PaperStrong}"
+                                BorderBrush="{StaticResource Divider}" BorderThickness="1">
+                            <Border.ToolTip>
+                                <Image Source="{Binding Image}" MaxWidth="400" MaxHeight="400" Stretch="Uniform"/>
+                            </Border.ToolTip>
+                            <v:HistoryThumbnail x:Name="HistoryImageViewport" Source="{Binding Image}"
+                                                Width="176" Height="99"
+                                                RenderOptions.BitmapScalingMode="HighQuality"/>
+                        </Border>
+                        <TextBlock Text="{Binding DimensionLabel}"
+                                   FontFamily="{StaticResource Mono}" FontSize="11"
+                                   Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
+            </Grid>
+        </DockPanel>
+    </DataTemplate>
+
+    <DataTemplate x:Key="ClipGifRowTemplate" DataType="{x:Type m:ClipItem}">
+        <DockPanel LastChildFill="True">
+            <TextBlock DockPanel.Dock="Left" Width="22" TextAlignment="Right"
+                       FontFamily="{StaticResource Mono}" FontSize="10"
+                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                       Text="{Binding (ItemsControl.AlternationIndex),
+                              RelativeSource={RelativeSource AncestorType=ListBoxItem},
+                              Converter={StaticResource IndexConv}}"/>
+
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
+                <TextBlock Text="📌" Foreground="{StaticResource Accent}" Margin="0,0,6,0"
+                           Visibility="{Binding PinVisibility}" FontSize="11"/>
+                <Border Visibility="{Binding RichVisibility}" Margin="0,0,7,0" Padding="4,0"
+                        CornerRadius="3" BorderThickness="1" BorderBrush="{StaticResource Divider}"
+                        VerticalAlignment="Center"
+                        ToolTip="带格式（列表编号、粗体等）。Enter / 单击保留格式粘贴，Shift+Enter / Shift+单击粘贴为纯文本">
+                    <TextBlock Text="格式" FontSize="9.5" Foreground="{StaticResource Accent}"/>
+                </Border>
+                <TextBlock FontFamily="{StaticResource Mono}" FontSize="10.5"
+                           Foreground="{StaticResource Muted}" Text="{Binding TimeLabel}"/>
+            </StackPanel>
+
+            <Grid Margin="14,0,0,0">
+                <!-- GIF items：三个 Run 分行写，行间空白就是显示出来的空格，不能合到一行。 -->
+                <TextBlock FontFamily="{StaticResource Serif}" FontSize="13"
+                           FontStyle="Italic" Foreground="{StaticResource Muted}"
+                           VerticalAlignment="Center">
+                    <Run Text="— gif,"/>
+                    <Run Text="{Binding DimensionLabel, Mode=OneWay}"/>
+                    <Run Text="—"/>
+                </TextBlock>
+            </Grid>
+        </DockPanel>
+    </DataTemplate>
+
+    <DataTemplate x:Key="ClipFilesRowTemplate" DataType="{x:Type m:ClipItem}">
+        <DockPanel LastChildFill="True">
+            <TextBlock DockPanel.Dock="Left" Width="22" TextAlignment="Right"
+                       FontFamily="{StaticResource Mono}" FontSize="10"
+                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                       Text="{Binding (ItemsControl.AlternationIndex),
+                              RelativeSource={RelativeSource AncestorType=ListBoxItem},
+                              Converter={StaticResource IndexConv}}"/>
+
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
+                <TextBlock Text="📌" Foreground="{StaticResource Accent}" Margin="0,0,6,0"
+                           Visibility="{Binding PinVisibility}" FontSize="11"/>
+                <Border Visibility="{Binding RichVisibility}" Margin="0,0,7,0" Padding="4,0"
+                        CornerRadius="3" BorderThickness="1" BorderBrush="{StaticResource Divider}"
+                        VerticalAlignment="Center"
+                        ToolTip="带格式（列表编号、粗体等）。Enter / 单击保留格式粘贴，Shift+Enter / Shift+单击粘贴为纯文本">
+                    <TextBlock Text="格式" FontSize="9.5" Foreground="{StaticResource Accent}"/>
+                </Border>
+                <TextBlock FontFamily="{StaticResource Mono}" FontSize="10.5"
+                           Foreground="{StaticResource Muted}" Text="{Binding TimeLabel}"/>
+            </StackPanel>
+
+            <Grid Margin="14,0,0,0">
+                <TextBlock Text="{Binding Preview}"
+                           FontFamily="{StaticResource Mono}" FontSize="12.5"
+                           Foreground="#3D2E1C"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center"/>
+            </Grid>
+        </DockPanel>
+    </DataTemplate>
+
+    <v:ClipKindTemplateSelector x:Key="ClipItemTemplateSelector"
+                                Text="{StaticResource ClipTextRowTemplate}"
+                                Image="{StaticResource ClipImageRowTemplate}"
+                                Gif="{StaticResource ClipGifRowTemplate}"
+                                Files="{StaticResource ClipFilesRowTemplate}"
+                                Fallback="{StaticResource ClipItemTemplate}"/>
+
     <!-- ── Image tile (ListBoxItem) ── -->
     <Style x:Key="ImageTileStyle" TargetType="{x:Type ListBoxItem}">
         <Setter Property="Padding" Value="0"/>

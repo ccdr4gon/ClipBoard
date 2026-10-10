@@ -380,7 +380,9 @@ internal static class Program
         {
             var row = (System.Windows.Controls.ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(index);
             var presenter = Find<System.Windows.Controls.ContentPresenter>(row)!;
-            var viewport = (FrameworkElement)list.ItemTemplate.FindName("HistoryImageViewport", presenter);
+            // 历史列表按类型选行模板（ItemTemplateSelector），取这一行实际套用的那个模板来找名字。
+            var template = list.ItemTemplate ?? list.ItemTemplateSelector.SelectTemplate(row.Content, presenter);
+            var viewport = (FrameworkElement)template.FindName("HistoryImageViewport", presenter);
             Check(viewport.Visibility == Visibility.Visible && Math.Abs(viewport.ActualWidth / viewport.ActualHeight - 16.0 / 9) < .01,
                 $"历史缩略图不可见或比例不正确：{viewport.ActualWidth}×{viewport.ActualHeight}");
             var visual = new DrawingVisual();
