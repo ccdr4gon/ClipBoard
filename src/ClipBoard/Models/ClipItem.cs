@@ -131,6 +131,26 @@ public class ClipItem : INotifyPropertyChanged
         Image?.PixelHeight ?? 0;
 #endif
 
+    // 文本条目的单行预览按 Text 字符串实例缓存：Text 换成别的字符串就自动失效，无需改任何 setter。
+    // 整个对象一次性替换，其它线程读到的 Src 与 Value 总是同一对。
+    private sealed class PreviewMemo(string? src, string value)
+    {
+        public readonly string? Src = src;
+        public readonly string Value = value;
+    }
+
+    [JsonIgnore]
+    private PreviewMemo? _previewMemo;
+
+    private string TextPreview()
+    {
+        var text = Text;
+        if (_previewMemo is { } memo && ReferenceEquals(memo.Src, text)) return memo.Value;
+        var value = (text ?? "").Replace("\r", "").Replace("\n", " ⏎ ");
+        _previewMemo = new PreviewMemo(text, value);
+        return value;
+    }
+
     [JsonIgnore]
     public string Preview
     {
@@ -138,7 +158,7 @@ public class ClipItem : INotifyPropertyChanged
         {
             return Kind switch
             {
-                ClipKind.Text => (Text ?? "").Replace("\r", "").Replace("\n", " ⏎ "),
+                ClipKind.Text => TextPreview(),
                 ClipKind.Files => FilePaths is null or { Length: 0 }
                     ? "(空文件列表)"
                     : FilePaths.Length == 1

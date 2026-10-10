@@ -7,9 +7,16 @@ public class IndexPlusOneConverter : IValueConverter
 {
     public static readonly IndexPlusOneConverter Instance = new();
 
+    // 行号每次建行都要转换一次：按需缓存 1..999 的字符串（AlternationCount=999），不再每次分配。
+    private static readonly string?[] Labels = new string?[1000];
+
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        if (value is int i) return (i + 1).ToString("D2");
+        if (value is int i)
+        {
+            int n = i + 1;
+            return (uint)n < (uint)Labels.Length ? Labels[n] ??= n.ToString("D2") : n.ToString("D2");
+        }
         return "??";
     }
 
