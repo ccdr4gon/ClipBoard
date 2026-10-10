@@ -367,8 +367,6 @@ public class PersistenceService
         return false;
     }
 
-    private static ReadOnlySpan<byte> PngSignature => [137, 80, 78, 71, 13, 10, 26, 10];
-
     /// <summary>
     /// image 是否正是 LoadImageThumbnail(name) 会解码出的缩略图：同一个 blob、同样的解码参数。是的话可以直接共用，结果完全相同。
     /// 捕获时缩略图失败而保留的原图、拖进来的图片等都不算，照常重新解码。
