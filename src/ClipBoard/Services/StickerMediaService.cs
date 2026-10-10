@@ -332,7 +332,7 @@ public sealed class StickerMediaService(PersistenceService persistence, string t
             canvas.Clear(SKColors.Transparent);
             DrawCaption(canvas, edit.Caption);
             string overlayPath = Path.Combine(work.Path, "caption.png");
-            SavePng(overlay, overlayPath);
+            SaveTempPng(overlay, overlayPath);
             inputs.AddRange(["-i", overlayPath]);
         }
         foreach (int quality in new[] { 24, 32, 40, 48, 56, 63 })
@@ -380,7 +380,7 @@ public sealed class StickerMediaService(PersistenceService persistence, string t
             canvas.Clear(SKColors.Transparent);
             animation.SeekFrameTime((double)i / fps, null);
             animation.Render(canvas, SKRect.Create(512, 512));
-            SavePng(bitmap, Path.Combine(directory, $"{i:D4}.png"));
+            SaveTempPng(bitmap, Path.Combine(directory, $"{i:D4}.png"));
         }
     }, ct);
 
@@ -445,6 +445,19 @@ public sealed class StickerMediaService(PersistenceService persistence, string t
     {
         using var image = SKImage.FromBitmap(bitmap);
         using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        using var stream = File.Create(path);
+        data.SaveTo(stream);
+    }
+
+    // 只给 ffmpeg 读一次的临时帧：仍是无损 PNG，块和解码后的像素与 SavePng 完全相同，只是只用 None 行滤波、最快的压缩，
+    // 每帧编码从约 15–30 ms 降到几毫秒。必须用 None（8）：NoFilters（0）表示“不指定”，libpng 仍会逐行尝试全部滤波。
+    // 保存或导出的文件仍走 SavePng（Telegram 静态图要按文件大小选 PNG / WebP）。
+    private static readonly SKPngEncoderOptions TempPngOptions = new(SKPngEncoderFilterFlags.None, 1);
+
+    private static void SaveTempPng(SKBitmap bitmap, string path)
+    {
+        using var pixmap = bitmap.PeekPixels() ?? throw new IOException("无法读取渲染帧。");
+        using var data = pixmap.Encode(TempPngOptions) ?? throw new IOException("无法写入临时帧。");
         using var stream = File.Create(path);
         data.SaveTo(stream);
     }
