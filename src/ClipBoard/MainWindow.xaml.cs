@@ -1455,12 +1455,76 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    // 基准模式与 diag.log 一样写进基准目录，不往正在使用的实例的数据目录里追加。
-    private static readonly string LogFile = System.IO.Path.Combine(
-        BenchMode.Root ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard"), "debug.log");
-    private static void Log(string msg)
+    private static void Log(string msg) => DebugLog.Write(msg);
+
+    /// <summary>
+    /// debug.log：时间戳在调用处取（内容与以前逐字相同），写盘交给线程池，点击、粘贴、激活 / 隐藏路径上不再同步开关文件。
+    /// 每批仍用 File.AppendAllText（无 BOM、写完即关），其它进程（基准、测试）照样能追加；进程正常退出或崩溃时把剩下的写完。
+    /// </summary>
+    private static class DebugLog
     {
-        try { System.IO.File.AppendAllText(LogFile, $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}"); } catch {}
+        // 基准模式与 diag.log 一样写进基准目录，不往正在使用的实例的数据目录里追加。
+        private static readonly string LogFile = System.IO.Path.Combine(
+            BenchMode.Root ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClipBoard"), "debug.log");
+        private static readonly object BufferGate = new(); // Write 只拿这把锁，永远不等磁盘
+        private static readonly object FileGate = new();   // 取出缓冲并写盘在这把锁内一气完成，保证先后顺序
+        private static readonly System.Text.StringBuilder Pending = new();
+        private static bool _drainQueued;
+
+        static DebugLog()
+        {
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => Flush();
+            AppDomain.CurrentDomain.UnhandledException += (_, _) => Flush();
+        }
+
+        public static void Write(string msg)
+        {
+            try
+            {
+                var line = $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}";
+                lock (BufferGate)
+                {
+                    Pending.Append(line);
+                    if (_drainQueued) return;
+                    _drainQueued = true;
+                }
+                ThreadPool.UnsafeQueueUserWorkItem(static _ => Drain(), null);
+            }
+            catch { } // 与以前一样：写日志绝不向调用方抛异常
+        }
+
+        private static void Drain()
+        {
+            while (true)
+            {
+                lock (FileGate)
+                {
+                    string text;
+                    lock (BufferGate)
+                    {
+                        if (Pending.Length == 0) { _drainQueued = false; return; }
+                        text = Pending.ToString();
+                        Pending.Clear();
+                    }
+                    Append(text);
+                }
+            }
+        }
+
+        private static void Flush()
+        {
+            lock (FileGate)
+            {
+                string text;
+                lock (BufferGate) { text = Pending.ToString(); Pending.Clear(); }
+                if (text.Length > 0) Append(text);
+            }
+        }
+
+        private static void Append(string text)
+        {
+            try { System.IO.File.AppendAllText(LogFile, text); } catch { }
+        }
     }
 
     private static bool HasDroppableData(DragEventArgs e) =>
