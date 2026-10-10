@@ -84,6 +84,8 @@ public sealed class TelegramStickerPublisher(TelegramStickerClient client, Stick
                     asset.PublishedUniqueId = pending.FileUniqueId;
                     asset.PublishedRevision = asset.PendingRevision;
                     asset.PendingFileId = asset.PendingUniqueId = null;
+                    // 卡片提示里的「已同步 / 待更新」靠通知刷新；以前每次切标签都会重建卡片，碰巧掩盖了这里漏掉的通知。
+                    entry.Item.NotifyMediaChanged();
                     save();
                 }
                 if (asset.PublishedFileId != null
