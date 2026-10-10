@@ -40,23 +40,31 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // 搜索框的两个处理器以前在首次 Loaded 里挂；窗口显示之前它们不可能触发，提前到这里挂效果相同，
+        // 也保证预热（见 Prewarm）建好标签页、Loaded 不再走建标签页的分支时它们照样挂上。
+        SearchBox.PreviewMouseLeftButtonDown += (_, ev) =>
+        {
+            if (!SearchBox.IsKeyboardFocusWithin)
+            {
+                SearchBox.Focus();
+                Keyboard.Focus(SearchBox);
+            }
+        };
+        SearchBox.LostKeyboardFocus += (_, _) =>
+        {
+            if (_pinned) SetNoActivateStyle(true);
+        };
         Loaded += (_, _) =>
         {
             if (_historyTab != null) return;
             BuildTabs();
-            SearchBox.PreviewMouseLeftButtonDown += (_, ev) =>
-            {
-                if (!SearchBox.IsKeyboardFocusWithin)
-                {
-                    SearchBox.Focus();
-                    Keyboard.Focus(SearchBox);
-                }
-            };
-            SearchBox.LostKeyboardFocus += (_, _) =>
-            {
-                if (_pinned) SetNoActivateStyle(true);
-            };
         };
+        // 启动空闲后预热面板。基准模式默认测冷启动的首次打开，不预热；设 CLIPBOARD_BENCH_PREWARM=1 时在基准开始前同步预热，
+        // 用来测预热后的首次打开（Normal 优先级排在 BenchMode.RunAsync 之前）。
+        if (!BenchMode.Enabled)
+            Dispatcher.BeginInvoke(new Action(Prewarm), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        else if (Environment.GetEnvironmentVariable("CLIPBOARD_BENCH_PREWARM") == "1")
+            Dispatcher.BeginInvoke(new Action(Prewarm), System.Windows.Threading.DispatcherPriority.Normal);
         SourceInitialized += OnSourceInitialized;
         Closed += (_, _) => _stickerActions?.Cancel();
         Activated += (_, _) => Log($"ACTIVATED pinned={_pinned} fg={ForegroundHex()}");
@@ -243,6 +251,26 @@ public partial class MainWindow : Window
             Text = enName, FontFamily = mono, FontSize = 9, Foreground = muted
         });
         return sp;
+    }
+
+    /// <summary>
+    /// 启动后空闲时预热：在隐藏的窗口里先建好标签页并按窗口大小排版一次（模板实例化、文字排版、首次 JIT），
+    /// 第一次按热键时 Show() 里的布局几乎没有活可干。只对从未显示过、也还没建标签页的窗口做；
+    /// 已显示的窗口绝不在这里重排（最大化时会把内容排成 780×640）。之后的首次打开流程不变，照样选中第一行。
+    /// </summary>
+    private void Prewarm()
+    {
+        if (_historyTab != null || IsVisible) return;
+        try
+        {
+            using (DiagLog.Phase("panel-prewarm"))
+            {
+                BuildTabs();
+                Measure(new Size(Width, Height));
+                Arrange(new Rect(0, 0, Width, Height));
+            }
+        }
+        catch (Exception ex) { DiagLog.Error("panel", "prewarm failed", ex); }
     }
 
     private void BuildTabs()
