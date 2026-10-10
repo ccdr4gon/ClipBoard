@@ -48,6 +48,7 @@ internal static class Program
                     ("重新打开清空搜索、回到顶部；单击和回车直接粘贴，Shift 为纯文本", PanelReopenAndPaste),
                     ("带格式文本重建编号、显示标记并提供纯文本粘贴", RichTextItems),
                     ("切换标签只替换选中状态变化的标签", TabsReplaceOnlyChanged),
+                    ("面板隐藏时增量更新列表，与整表重建一致", HiddenIncrementalRows),
                     ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
@@ -302,6 +303,45 @@ internal static class Program
         Check(before.Skip(2).Zip(after.Skip(2)).All(p => ReferenceEquals(p.First, p.Second)), "未变化的标签被重建");
         window.SelectView("history"); await Task.Delay(100);
         Check(Tabs()[0].Classes.Contains("selected"), "切回历史后选中标签不对");
+    }
+    private static async Task HiddenIncrementalRows()
+    {
+        var app = (App)App.Current!;
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)app.ApplicationLifetime!).MainWindow!;
+        for (int i = 0; i < 8; i++) App.History.Capture(new(Text: "增量条目 " + i));
+        if (!window.IsVisible) app.ShowPanel();
+        window.MouseMove(new Point(5, 5)); // 鼠标停在列表上时按原样整表重建
+        var list = window.GetVisualDescendants().OfType<ListBox>().Single();
+        ListBoxItem[] Rows() => list.GetVisualDescendants().OfType<ListBoxItem>().ToArray();
+        string Describe(ListBoxItem row)
+        {
+            var menu = row.GetVisualDescendants().OfType<Control>().Select(c => c.ContextMenu).First(m => m != null)!;
+            MainWindow.EnsureMenuItems(menu);
+            static string Headers(IEnumerable<object?> items) => string.Join(",", items.OfType<MenuItem>().Select(m => m.Header + (m.Items.Count > 0 ? "{" + Headers(m.Items) + "}" : "")));
+            return string.Join("|", row.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text)) + " #" + Headers(menu.Items);
+        }
+        // 每个条目的行要先生成过一次（第一次排版的字体解析可能不同）才会被沿用：隐藏、渲染、再打开一次。
+        window.SelectView("history"); await Task.Delay(100);
+        window.Hide(); window.SelectView("history"); app.ShowPanel(); await Task.Delay(100);
+        var before = Rows();
+        var target = App.History.Items[3];
+        window.Hide();
+        App.History.Capture(new(Text: "隐藏时新增"));
+        await Task.Delay(50);
+        target.RichBlobName = App.Persistence.SaveRichBlob(new RichContent("<b>补上格式</b>", null)); // 没有集合变化的数据变化
+        app.ShowPanel(); await Task.Delay(100);
+        var after = Rows();
+        var targetRow = before.First(r => r.DataContext == target);
+        Check(after.Length == before.Length + 1 && after.Any(r => (r.DataContext as ClipItem)?.Text == "隐藏时新增"), "隐藏时新增的条目没有显示");
+        Check(before.Where(r => r != targetRow).All(after.Contains), "隐藏时新增条目后其余行被整表重建");
+        Check(!after.Contains(targetRow) && after.First(r => r.DataContext == target).GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "格式"), "数据变化的行没有按新数据重新生成");
+        Check(after.Select(r => r.GetVisualDescendants().OfType<TextBlock>().First().Text).SequenceEqual(Enumerable.Range(1, after.Length).Select(i => i.ToString("D2"))), "保留的行编号没有更新");
+        Check(list.SelectedIndex == 0, "重新打开后没有选中第一条");
+        var incremental = after.Select(Describe).ToArray();
+        window.SelectView("images"); window.SelectView("history"); await Task.Delay(100);
+        var rebuilt = Rows();
+        Check(rebuilt.All(r => !after.Contains(r)) && incremental.SequenceEqual(rebuilt.Select(Describe)), "增量更新的列表与整表重建的内容不一致");
+        foreach (var item in App.History.Items.Where(i => i.Text?.StartsWith("增量条目") == true || i.Text == "隐藏时新增").ToArray()) App.History.Remove(item);
     }
     private static async Task SettingsDialogs(bool native)
     {

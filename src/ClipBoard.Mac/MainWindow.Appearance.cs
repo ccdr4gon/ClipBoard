@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
@@ -23,7 +24,13 @@ public sealed partial class MainWindow
     private readonly TextBlock _counter = Label("NO. 000", 10.5, true);
     private readonly TextBlock _entryCount = Label("— 0 entries —", 10.5, true);
     private bool _pinned, _contextOpen;
-    private IReadOnlyList<ClipItem> _shown = [];
+    // 列表渲染状态：当前 ItemsSource、生成它时的视图与收藏夹、已生成的行（见 TrySyncRows）。
+    private ObservableCollection<ClipItem> _visible = [];
+    private (string, FavoriteFolder?, FolderKind?, string)? _renderKey;
+    private (FavoriteFolder, string)[] _renderFolders = [];
+    private readonly Dictionary<ClipItem, BuiltRow> _built = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<ClipItem> _rowHistory = new(ReferenceEqualityComparer.Instance); // 本视图里生成过行的条目
+    private bool _resyncOnShow, _rowsTouched;
     private readonly List<(string Mode, FavoriteFolder? Folder, string Name, string Subtitle)> _tabKeys = [];
     private Button? _focusedTab; // 窗口里最后拿到焦点的是哪个标签（不是标签则为 null）
     private bool _tabsSettled;
@@ -184,33 +191,121 @@ public sealed partial class MainWindow
         var selected = (_items.SelectedItem as ClipItem)?.Id;
         bool rows = _mode == "history" || _folder?.Kind == FolderKind.Normal;
         _items.Classes.Set("history", rows); _items.Classes.Set("tiles", !rows && _mode != "emoji"); _items.Classes.Set("emoji", _mode == "emoji");
-        _items.ItemsPanel = new FuncTemplate<Panel?>(() => rows ? new StackPanel() : new WrapPanel());
         var items = VisibleItems;
-        _shown = items; // 先于 ItemsSource 赋值：行号从这份列表里取
-        _items.ItemsSource = items;
-        _items.SelectedItem = items.FirstOrDefault(i => i.Id == selected);
+        // 面板隐藏时（粘贴之后、后台复制时）只做增量更新；面板显示着时仍整表重建，与原先完全一致。
+        if (IsVisible || !SameRenderState() || !TrySyncRows(items)) RebuildList(items);
+        else _resyncOnShow = true;
+        _items.SelectedItem = _visible.FirstOrDefault(i => i.Id == selected);
         _counter.Text = $"NO. {App.History.Items.Count + App.Favorites.PinnedHistory.Count + App.Favorites.Folders.Sum(f => f.Items.Count):D3}";
-        _entryCount.Text = $"— {items.Count} entries —";
+        _entryCount.Text = $"— {_visible.Count} entries —";
     }
+    private void RebuildList(IReadOnlyList<ClipItem> items)
+    {
+        bool rows = _mode == "history" || _folder?.Kind == FolderKind.Normal;
+        var key = RenderKey();
+        if (_renderKey != key) _rowHistory.Clear(); else _rowHistory.IntersectWith(items);
+        _renderKey = key; _renderFolders = FolderNames(); _built.Clear(); _resyncOnShow = false; _rowsTouched = false;
+        _items.ItemsPanel = new FuncTemplate<Panel?>(() => rows ? new StackPanel() : new WrapPanel());
+        _visible = new ObservableCollection<ClipItem>(items); // 先于 ItemsSource 赋值：行号从这份列表里取
+        _items.ItemsSource = _visible;
+    }
+    private (string, FavoriteFolder?, FolderKind?, string) RenderKey() => (_mode, _folder, _folder?.Kind, _search.Text ?? "");
+    private static (FavoriteFolder, string)[] FolderNames() => App.Favorites.Folders.Select(f => (f, f.Name)).ToArray();
+    // 能否沿用已生成的行：同一视图、同一组收藏夹（行的“收藏到”菜单列出它们），列表里没有控件拿到过焦点
+    // （单击会让行获得焦点，重新激活窗口时焦点和滚动可能回到旧行），没有打开着的右键菜单，
+    // 鼠标也不在列表上（原先整表重建后第一帧就按鼠标位置重新判定悬停底色和提示，沿用旧行会晚一帧）。
+    private bool SameRenderState() => _renderKey == RenderKey() && FolderNames().SequenceEqual(_renderFolders) && !_rowsTouched && !_contextOpen && !_items.IsPointerOver;
+
+    // 隐藏时的增量更新：移除已不在列表里的条目、插入新条目，其余已生成的行原样保留（编号在下面改写）。
+    // 原先每次都换掉 ItemsSource 和面板，下次打开面板时全部几百行重新生成、重新排版。
+    // 保留的行必须与此刻重新生成的完全相同，否则换成新容器（打开面板时重新生成）：
+    // 条目的显示数据变了（例如同一段文字补上了格式）、鼠标停在行上（悬停底色、提示）、
+    // 或这是该条目第一次生成的行（第一次排版时回退字体可能与之后不同，原先下一次渲染就会换掉它）。
+    // 改动太多或顺序变了（例如“向前移动”）时返回 false，整表重建。
+    private const int MaxRowEdits = 24;
+    private bool TrySyncRows(IReadOnlyList<ClipItem> target)
+    {
+        var wanted = new HashSet<ClipItem>(target, ReferenceEqualityComparer.Instance);
+        var current = new HashSet<ClipItem>(_visible, ReferenceEqualityComparer.Instance);
+        if (!_visible.Where(wanted.Contains).SequenceEqual(target.Where(current.Contains), ReferenceEqualityComparer.Instance)) return false;
+        int kept = target.Count(current.Contains);
+        var stale = StaleRows(wanted);
+        if (stale == null || _visible.Count - kept + target.Count - kept + stale.Count > MaxRowEdits) return false;
+        for (int i = _visible.Count - 1; i >= 0; i--)
+            if (!wanted.Contains(_visible[i])) { _built.Remove(_visible[i]); _rowHistory.Remove(_visible[i]); _visible.RemoveAt(i); }
+        for (int i = 0; i < target.Count; i++)
+            if (i >= _visible.Count || !ReferenceEquals(_visible[i], target[i])) _visible.Insert(i, target[i]);
+        ReplaceRows(stale);
+        return true;
+    }
+    /// <summary>需要换新容器的已生成行；超过上限时返回 null。</summary>
+    private HashSet<ClipItem>? StaleRows(HashSet<ClipItem>? among = null)
+    {
+        var stale = new HashSet<ClipItem>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < _visible.Count; i++)
+        {
+            var item = _visible[i];
+            if (among?.Contains(item) == false || !_built.TryGetValue(item, out var row)) continue; // 还没生成的行打开面板时才按当时的数据生成
+            if (!row.Settled || row.State != StateOf(item) || row.Tip != null && ToolTip.GetIsOpen(row.Tip) || _items.ContainerFromIndex(i)?.IsPointerOver == true)
+                if (stale.Add(item) && stale.Count > MaxRowEdits) return null;
+        }
+        return stale;
+    }
+    private void ReplaceRows(HashSet<ClipItem> stale)
+    {
+        for (int i = 0; i < _visible.Count; i++)
+        {
+            var item = _visible[i];
+            if (stale.Contains(item)) { _built.Remove(item); _visible[i] = item; } // 换成新容器，打开面板时重新生成
+            else if (_built.TryGetValue(item, out var row) && row.Index != null)
+            {
+                string number = (i + 1).ToString("D2");
+                if (row.Index.Text != number) row.Index.Text = number;
+            }
+        }
+    }
+    /// <summary>
+    /// 打开面板前调用（面板仍隐藏）。原先隐藏期间渲染过，打开时全部行按当时的数据重新生成；
+    /// 增量更新时保留的行在这里按此刻的数据再核对一遍。
+    /// </summary>
+    internal void ResyncHiddenRows()
+    {
+        if (!_resyncOnShow || IsVisible) return;
+        _resyncOnShow = false;
+        if (!SameRenderState() || StaleRows() is not { } stale) RebuildList(_visible.ToArray()); // 原先显示的也是上次渲染时的列表
+        else ReplaceRows(stale);
+    }
+    private readonly record struct RowState(ClipKind Kind, bool Pinned, string? Rich, DateTime Time, object? Image, byte[]? Gif,
+        int Width, int Height, StickerAsset? Sticker, double? Duration, string? Text, string[]? Files, string? Title, Guid Id);
+    // 生成一行时读到的全部条目数据（不含会解码或拼接字符串的属性）。
+    private static RowState StateOf(ClipItem i) => new(i.Kind, i.IsPinned, i.RichBlobName, i.Timestamp, i.Image, i.GifBytes,
+        i.PixelW, i.PixelH, i.Sticker, i.Sticker?.DurationSeconds, i.Text, i.FilePaths, i.Title, i.Id);
+    private sealed record BuiltRow(TextBlock? Index, Control? Tip, RowState State, bool Settled);
+
     private Control RenderItem(ClipItem item)
     {
+        TextBlock? index = null; Control? tip = null;
         Control control = _mode == "emoji" ? new Border { Width = 44, Height = 44, Background = Brushes.Transparent, Child = new TextBlock { Text = item.Text, FontSize = 26, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center } }
-            : _mode == "history" || _folder?.Kind == FolderKind.Normal ? HistoryRow(item) : ImageTile(item);
-        AttachItemActions(control, item); return control;
+            : _mode == "history" || _folder?.Kind == FolderKind.Normal ? HistoryRow(item, out index, out tip) : ImageTile(item, out tip);
+        AttachItemActions(control, item);
+        // 模板在排版时才运行，所以该条目此前若生成过行，那一行已经排版（字体已解析）过。
+        _built[item] = new BuiltRow(index, tip, StateOf(item), Settled: !_rowHistory.Add(item));
+        return control;
     }
     // 行号取自正在显示的列表（与 IndexOf 一样按引用找第一个）。原先每行都重新筛选全部条目再查找，
     // 一次渲染是 O(n²)，搜索时每个条目还要拼接一遍全文。
     private int RowNumber(ClipItem item)
     {
-        var shown = _shown;
+        var shown = _visible;
         for (int i = 0; i < shown.Count; i++) if (ReferenceEquals(shown[i], item)) return i + 1;
         return VisibleItems.ToList().IndexOf(item) + 1;
     }
-    private Control HistoryRow(ClipItem item)
+    private Control HistoryRow(ClipItem item, out TextBlock index, out Control? tip)
     {
+        tip = null;
         // 透明背景让整行（不只是文字）都能响应右键菜单。
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("22,*,Auto"), Background = Brushes.Transparent };
-        var index = Label(RowNumber(item).ToString("D2"), 10, true); index.TextAlignment = TextAlignment.Right; row.Children.Add(index);
+        index = Label(RowNumber(item).ToString("D2"), 10, true); index.TextAlignment = TextAlignment.Right; row.Children.Add(index);
         var meta = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
         if (item.IsPinned) meta.Children.Add(Label("📌", 11));
         if (item.HasRichText)
@@ -218,7 +313,7 @@ public sealed partial class MainWindow
             var badge = new Border { Padding = new Thickness(4, 0), CornerRadius = new CornerRadius(3), BorderBrush = Divider, BorderThickness = new Thickness(1),
                 VerticalAlignment = VerticalAlignment.Center, Child = new TextBlock { Text = "格式", FontSize = 9.5, Foreground = Brush.Parse("#7A4F2B") } };
             ToolTip.SetTip(badge, "带格式（列表编号、粗体等）。回车 / 单击保留格式粘贴，Shift+回车 / Shift+单击粘贴为纯文本");
-            meta.Children.Add(badge);
+            meta.Children.Add(badge); tip = badge;
         }
         meta.Children.Add(Label(item.TimeLabel, 10.5, true));
         Grid.SetColumn(meta, 2); row.Children.Add(meta);
@@ -227,7 +322,7 @@ public sealed partial class MainWindow
         {
             var preview = new Border { Width = 184, Height = 107, Padding = new Thickness(3), Background = Brush.Parse("#F5FDFAF3"), BorderBrush = Divider, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4),
                 Child = new HistoryThumbnail { Source = item.Image, Width = 176, Height = 99 }, Margin = new Thickness(0, 0, 12, 0) };
-            ToolTip.SetTip(preview, new Image { Source = item.Image, MaxWidth = 400, MaxHeight = 400, Stretch = Stretch.Uniform });
+            ToolTip.SetTip(preview, new Image { Source = item.Image, MaxWidth = 400, MaxHeight = 400, Stretch = Stretch.Uniform }); tip = preview;
             var image = new DockPanel(); DockPanel.SetDock(preview, Dock.Left); image.Children.Add(preview);
             var dimensions = Label(item.DimensionLabel, 11, true); dimensions.TextTrimming = TextTrimming.CharacterEllipsis; image.Children.Add(dimensions); content = image;
         }
@@ -240,7 +335,7 @@ public sealed partial class MainWindow
         }
         content.Margin = new Thickness(14, 0, 0, 0); Grid.SetColumn(content, 1); row.Children.Add(content); return row;
     }
-    private Control ImageTile(ClipItem item)
+    private Control ImageTile(ClipItem item, out Control tip)
     {
         bool meme = _folder?.Kind == FolderKind.Meme;
         var label = Label(meme ? item.TitleOrUntitled : item.DimensionLabel, meme ? 15 : 10, !meme);
@@ -250,7 +345,7 @@ public sealed partial class MainWindow
         content.Children.Add(new Border { ClipToBounds = true, Child = new Image { Source = item.Image ?? item.GifSource, Stretch = meme ? Stretch.Uniform : Stretch.UniformToFill } });
         var card = new Border { Width = 210, Height = 246, Padding = new Thickness(10), Background = Brush.Parse("#FFFEF9"), BorderBrush = Divider, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(1),
             BoxShadow = BoxShadows.Parse("2 3 10 0 #382C2418"), RenderTransformOrigin = new RelativePoint(.5, .5, RelativeUnit.Relative), RenderTransform = new RotateTransform(((uint)item.Id.GetHashCode() % 301) / 100.0 - 1.5), Child = content };
-        ToolTip.SetTip(card, new Image { Source = item.Image ?? item.GifSource, MaxWidth = 400, MaxHeight = 400, Stretch = Stretch.Uniform }); return card;
+        ToolTip.SetTip(card, new Image { Source = item.Image ?? item.GifSource, MaxWidth = 400, MaxHeight = 400, Stretch = Stretch.Uniform }); tip = card; return card;
     }
     private async void OnPanelKeyDown(object? sender, KeyEventArgs e)
     {

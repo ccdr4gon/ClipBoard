@@ -39,6 +39,8 @@ public sealed partial class MainWindow : Window
         SubscribeFolders(); RenderTabs(); RenderToolbar(); RenderCards();
         Closing += (_, e) => { if (!Application.Quitting) { e.Cancel = true; Hide(); } };
         AddHandler(KeyDownEvent, OnPanelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        // 列表里有控件拿到过焦点（单击、Tab 键、右键菜单）后，隐藏时的渲染不再沿用旧行（见 SameRenderState）。
+        _items.AddHandler(GotFocusEvent, (_, _) => _rowsTouched = true, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
         // 记下最后拿到焦点的标签，重绘标签时不保留它（见 RenderTabs）。
         AddHandler(GotFocusEvent, (_, e) => _focusedTab = (e.Source as Visual)?.FindAncestorOfType<Button>(includeSelf: true) is { } tab && tab.Parent == _tabs ? tab : null,
             Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
@@ -79,7 +81,7 @@ public sealed partial class MainWindow : Window
     /// <summary>每次重新打开面板：清空搜索，列表回到顶部并选中第一条，回车即可粘贴最新内容。</summary>
     internal void ResetView()
     {
-        if (string.IsNullOrEmpty(_search.Text)) ResetPosition();
+        if (string.IsNullOrEmpty(_search.Text)) { ResyncHiddenRows(); ResetPosition(); }
         else _search.Text = ""; // 文字变化会重新渲染并回到顶部
     }
     private void ResetPosition()
@@ -162,7 +164,7 @@ public sealed partial class MainWindow : Window
         menu.Tag = (Action)Fill;
         menu.Opening += (_, _) => Fill(); // ContextMenu.Open() 不触发 Opening；这类菜单只由 ContextRequested 打开
         card.ContextMenu = menu;
-        menu.Opened += (_, _) => _contextOpen = true;
+        menu.Opened += (_, _) => _contextOpen = _rowsTouched = true;
         menu.Closed += (_, _) => _contextOpen = false;
     }
     /// <summary>不弹出菜单就生成菜单项（测试读取菜单内容用）。</summary>
