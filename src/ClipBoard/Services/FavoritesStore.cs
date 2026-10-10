@@ -348,15 +348,39 @@ public class FavoritesStore
 
     internal void DeleteUnusedBlob(ClipItem item)
     {
-        var remaining = PinnedHistory.Concat(Folders.SelectMany(f => f.Items))
-            .Concat(_history?.Items ?? Enumerable.Empty<ClipItem>()).ToArray();
         // 包括原件和修改版；原件仍被其他收藏引用时不可清理。
         foreach (var name in BlobNames(item).Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            if (!remaining.Any(i => BlobNames(i).Contains(name, StringComparer.OrdinalIgnoreCase)))
+            if (!IsBlobUsed(name!))
                 _persistence.DeleteImageBlob(name!);
         }
     }
+
+    // 按调用时的集合逐字段比较；删除文件不改动集合，不必先复制一份，也不为每个条目分配数组。
+    private bool IsBlobUsed(string name)
+    {
+        for (int i = 0; i < PinnedHistory.Count; i++)
+            if (UsesBlob(PinnedHistory[i], name)) return true;
+        for (int f = 0; f < Folders.Count; f++)
+        {
+            var items = Folders[f].Items;
+            for (int i = 0; i < items.Count; i++)
+                if (UsesBlob(items[i], name)) return true;
+        }
+        if (_history != null)
+        {
+            var history = _history.Items;
+            for (int i = 0; i < history.Count; i++)
+                if (UsesBlob(history[i], name)) return true;
+        }
+        return false;
+    }
+
+    private static bool UsesBlob(ClipItem item, string name)
+        => SameBlob(item.ImageBlobName, name) || SameBlob(item.GifBlobName, name) || SameBlob(item.RichBlobName, name)
+           || (item.Sticker is { } sticker && (SameBlob(sticker.OriginalBlobName, name) || SameBlob(sticker.WorkingBlobName, name)));
+
+    private static bool SameBlob(string? a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     private static string?[] BlobNames(ClipItem item)
         => [item.ImageBlobName, item.GifBlobName, item.RichBlobName, item.Sticker?.OriginalBlobName, item.Sticker?.WorkingBlobName];
