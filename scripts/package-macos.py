@@ -34,6 +34,9 @@ def main():
                     "-c", "Release", "-r", f"osx-{args.arch}", "--self-contained", "true",
                     "-p:UseAppHost=true", "-p:PublishTrimmed=false", "-p:PublishSingleFile=true",
                     "-p:DebugType=None", "-p:DebugSymbols=false",
+                    # Precompile the app, Avalonia and Skia IL (the framework is already R2R). Single-file
+                    # publishes default to composite R2R, which rebuilds the whole framework, so turn it off.
+                    "-p:PublishReadyToRun=true", "-p:PublishReadyToRunComposite=false",
                     "-p:IncludeNativeLibrariesForSelfExtract=false", "-o", str(binary)], check=True)
     info = {
         "CFBundleName": "ClipBoard", "CFBundleDisplayName": "ClipBoard",

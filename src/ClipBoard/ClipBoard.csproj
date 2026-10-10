@@ -13,6 +13,19 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
+  <!-- 发布性能设置（实测，见提交说明）：
+       单文件不压缩：程序集直接从 exe 映射，不再整个解压进私有内存，启动快约 0.4 秒、常驻内存少约 50–80 MB，代价是 exe 约 168 MB；
+       ReadyToRun 只预编译本程序和 NuGet 程序集（框架本身已预编译）。单文件发布默认会做 composite，把整个框架重编进一个 90 MB 映像，反而更慢更占内存，必须显式关掉。 -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' and '$(RuntimeIdentifier)' != ''">
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunComposite>false</PublishReadyToRunComposite>
+  </PropertyGroup>
+  <!-- 命令行 -p:EnableCompressionInSingleFile=true 会覆盖上面的设置，至少给个提醒。 -->
+  <Target Name="WarnSingleFileCompression" BeforeTargets="GenerateSingleFileBundle" Condition="'$(EnableCompressionInSingleFile)' == 'true'">
+    <Warning Text="EnableCompressionInSingleFile=true：启动约慢 0.4 秒、常驻内存多约 50–80 MB。发布请去掉这个参数。" />
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="Emoji.Wpf" Version="0.3.4" />
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="1.1.0" />

@@ -77,8 +77,10 @@ dotnet run --project src/ClipBoard/ClipBoard.csproj
 # 或发布为自包含单文件
 dotnet publish src/ClipBoard/ClipBoard.csproj -c Release -r win-x64 `
   --self-contained true -p:PublishSingleFile=true `
-  -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
+  -p:IncludeNativeLibrariesForSelfExtract=true
 ```
+
+不要加 `-p:EnableCompressionInSingleFile=true`：项目里已关闭压缩并开启 ReadyToRun，压缩会让启动慢约 0.4 秒、常驻内存多约 50–80 MB。
 
 macOS（在 Mac 上构建会自动签名并检查）：
 
