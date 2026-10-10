@@ -60,12 +60,14 @@ public partial class App : Application
                 MacOSProperties.SetIsTemplateIcon(_tray, true); // 模板图：深色菜单栏显示为白色，浅色菜单栏显示为黑色
                 TrayIcon.SetIcons(this, new TrayIcons { _tray });
             }
-            desktop.Exit += (_, _) => { Favorites.Save(); Persistence.FlushSync(); _poll?.Stop(); _hotkey?.Dispose(); _tray?.Dispose(); };
+            desktop.Exit += (_, _) => { History.DrainForExit(); Favorites.Save(); Persistence.FlushSync(); _poll?.Stop(); _hotkey?.Dispose(); _tray?.Dispose(); };
         }
         base.OnFrameworkInitializationCompleted();
     }
     private void Poll()
     {
+        // 上一张图片还在后台处理：原先这段时间界面线程被占用、轮询不会运行，处理完再读最新的剪贴板。
+        if (History.IsCapturing) return;
         try
         {
             long sequence;
@@ -78,13 +80,25 @@ public partial class App : Application
             if (sequence == _sequence) return;
             _sequence = sequence;
             var content = MacClipboard.Read();
-            if (content != null && MacClipboard.Sequence == sequence) History.Capture(content);
+            if (content != null && MacClipboard.Sequence == sequence) _ = CaptureReported(content);
         }
+        catch (Exception ex) { _window?.SetStatus("读取剪贴板失败：" + ex.Message); }
+    }
+    // 文字和文件在调用里同步完成（异常也同步抛出）；图片在后台处理完才报告失败。
+    private async Task CaptureReported(ClipboardContent content)
+    {
+        try { await History.CaptureAsync(content); }
         catch (Exception ex) { _window?.SetStatus("读取剪贴板失败：" + ex.Message); }
     }
     public void ShowPanel()
     {
         if (_window == null || Views.Dialogs.ActivateModal(_window)) return;
+        // 刚复制的图片还在后台处理时，等它进入历史再打开（原先打开面板本来就排在它之后），回车粘贴的仍是最新内容。
+        if (!_window.IsVisible && History.IsCapturing)
+        {
+            History.WhenIdle.ContinueWith(_ => Dispatcher.UIThread.Post(ShowPanel), TaskScheduler.Default);
+            return;
+        }
         if (!Preview && OperatingSystem.IsMacOS())
         {
             int pid = MacNative.ForegroundPid();

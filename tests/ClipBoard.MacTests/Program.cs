@@ -50,6 +50,7 @@ internal static class Program
                     ("切换标签只替换选中状态变化的标签", TabsReplaceOnlyChanged),
                     ("面板隐藏时增量更新列表，与整表重建一致", HiddenIncrementalRows),
                     ("右键预览图片显示原图", ImagePreviewDialog),
+                    ("轮询复制的图片在后台处理、按顺序进入历史", AsyncImageCapture),
                     ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
@@ -347,7 +348,9 @@ internal static class Program
         Check(after.Select(r => r.GetVisualDescendants().OfType<TextBlock>().First().Text).SequenceEqual(Enumerable.Range(1, after.Length).Select(i => i.ToString("D2"))), "保留的行编号没有更新");
         Check(list.SelectedIndex == 0, "重新打开后没有选中第一条");
         var incremental = after.Select(Describe).ToArray();
-        window.SelectView("images"); window.SelectView("history"); await Task.Delay(100);
+        window.SelectView("images"); window.SelectView("history");
+        if (!window.IsVisible) app.ShowPanel(); // 失焦隐藏的面板不生成行
+        await Task.Delay(100);
         var rebuilt = Rows();
         Check(rebuilt.All(r => !after.Contains(r)) && incremental.SequenceEqual(rebuilt.Select(Describe)), "增量更新的列表与整表重建的内容不一致");
         foreach (var item in App.History.Items.Where(i => i.Text?.StartsWith("增量条目") == true || i.Text == "隐藏时新增").ToArray()) App.History.Remove(item);
@@ -364,17 +367,50 @@ internal static class Program
         var row = window.GetVisualDescendants().OfType<ListBoxItem>().First(r => r.DataContext == item);
         var menu = row.GetVisualDescendants().OfType<Control>().Select(c => c.ContextMenu).First(m => m != null)!;
         MainWindow.EnsureMenuItems(menu);
+        if (!window.IsVisible) app.ShowPanel(); // 无头平台偶尔失焦隐藏面板；隐藏的面板不能作为弹窗的所有者
         menu.Items.OfType<MenuItem>().Single(m => m.Header as string == "预览").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(MenuItem.ClickEvent));
         Window? dialog = null;
         for (int i = 0; i < 40 && (dialog = window.OwnedWindows.FirstOrDefault()) == null; i++) await Task.Delay(50);
         try
         {
-            Check(dialog?.Content is Image { Source: Avalonia.Media.Imaging.Bitmap { PixelSize.Width: 1800 } }, "预览窗口没有显示原图");
+            Check(dialog?.Content is Image { Source: Avalonia.Media.Imaging.Bitmap { PixelSize.Width: 1800 } }, $"预览窗口没有显示原图：dialog={dialog?.Title} content={(dialog?.Content as Image)?.Source?.GetType().Name} size={((dialog?.Content as Image)?.Source as Avalonia.Media.Imaging.Bitmap)?.PixelSize} visible={window.IsVisible}");
         }
         finally { dialog?.Close(); }
         for (int i = 0; i < 40 && Dialogs.HasModal(window); i++) await Task.Delay(50);
         Check(!Dialogs.HasModal(window) && window.GetVisualDescendants().OfType<ListBox>().Single().IsEffectivelyEnabled, "关闭预览后主面板没有恢复");
         App.History.Remove(item);
+    }
+    private static async Task AsyncImageCapture()
+    {
+        var app = (App)App.Current!;
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)app.ApplicationLifetime!).MainWindow!;
+        int before = App.History.Items.Count;
+        var text = App.History.CaptureAsync(new(Text: "异步接口的文字"));
+        Check(text.IsCompleted && App.History.Items[0].Text == "异步接口的文字", "文字没有同步进入历史");
+        window.SelectView("history"); window.Hide();
+        var png = Png(11, 2400, 1600);
+        var capture = App.History.CaptureAsync(new(Image: png));
+        var duplicate = App.History.CaptureAsync(new(Image: png)); // 排在后面，轮到它时与第一张去重
+        bool pending = App.History.IsCapturing, reopened = false;
+        window.PropertyChanged += Reopened;
+        void Reopened(object? s, AvaloniaPropertyChangedEventArgs e) { if (e.Property == Visual.IsVisibleProperty && window.IsVisible) reopened = true; }
+        app.ShowPanel();
+        Check(pending && !window.IsVisible, "图片还在处理时隐藏的面板就打开了"); // 插入要回到界面线程，此刻一定还没完成
+        await capture; await duplicate; await Task.Delay(100);
+        window.PropertyChanged -= Reopened;
+        if (!window.IsVisible) app.ShowPanel(); // 打开后又失焦隐藏（无头平台偶发）
+        var image = App.History.Items[0];
+        Check(reopened && image.Kind == ClipKind.Image && image.PixelW == 2400 && image.Image!.PixelSize.Width == 512
+            && App.History.Items[1].Text == "异步接口的文字" && App.History.Items.Count == before + 2, "图片没有按顺序进入历史或没有去重");
+        var list = window.GetVisualDescendants().OfType<ListBox>().Single();
+        Check(list.SelectedIndex == 0 && list.SelectedItem == image, "打开面板后没有选中刚复制的图片");
+        // 退出时仍在后台处理的图片要补进历史，且之后不会再插入一次。
+        var exiting = App.History.CaptureAsync(new(Image: Png(12, 300, 200)));
+        App.History.DrainForExit();
+        Check(App.History.Items[0] is { Kind: ClipKind.Image, PixelW: 300 }, "退出时没有把处理中的图片补进历史");
+        await exiting;
+        Check(App.History.Items.Count(i => i.Kind == ClipKind.Image && i.PixelW == 300) == 1, "处理中的图片被插入了两次");
+        foreach (var item in App.History.Items.Take(3).ToArray()) App.History.Remove(item);
     }
     private static async Task SettingsDialogs(bool native)
     {
