@@ -152,6 +152,14 @@ public partial class App : Application
 
         DiagLog.Write("startup", $"=== startup complete in {DiagLog.ElapsedMs}ms ===");
 
+        // 面板藏起来后安排一次空闲内存整理，重新出现就取消（见 ScheduleIdleTrim）。基准模式不走到这里。
+        var panel = _mainWindow;
+        panel.IsVisibleChanged += (_, _) =>
+        {
+            if (panel.IsVisible) _idleTrimTimer?.Stop();
+            else ScheduleIdleTrim();
+        };
+
         // 自启动同步放到最后、且在后台线程：它要连任务计划服务（跨进程 COM），
         // 登录高峰时可能慢。绝不能让它挡在托盘图标前面——那正是「进程在跑但托盘没图标」的成因。
         SyncAutostartInBackground();
@@ -191,15 +199,86 @@ public partial class App : Application
                 break;
             case ClipKind.Image when e.Image is not null:
                 History.AddImage(e.Image);
+                if (_mainWindow is { IsVisible: false }) ScheduleIdleTrim(); // 截图会留下几十 MB 的临时数组
                 break;
             case ClipKind.Files when e.Files is { Length: > 0 }:
                 History.AddFiles(e.Files);
                 break;
             case ClipKind.Gif when e.GifBytes is { Length: > 0 }:
                 History.AddGif(e.GifBytes);
+                if (_mainWindow is { IsVisible: false }) ScheduleIdleTrim();
                 break;
         }
     }
+
+    // ---- 空闲时把 GC 多占的内存还给系统 ------------------------------------
+    // 常规 GC 只会一点点地归还空闲区域，而进程藏在托盘里几乎不再分配、也就不再触发 GC，
+    // 用面板或截图留下的峰值会一直占着。面板隐藏（或隐藏时收到图片）10 秒后，若期间没有任何
+    // WPF 窗口可见、且上次整理以来又分配了足够多，就在后台线程做一次 Aggressive 全量 GC。
+    // 离屏基准实测：空闲私有内存比普通全量 GC 后再少约 10 MB，之后打开面板的耗时不变。
+    private const long IdleTrimMinAllocatedBytes = 16L << 20;
+    private System.Windows.Threading.DispatcherTimer? _idleTrimTimer;
+    private long _allocatedAtLastTrim;
+    private int _idleTrimRunning;
+
+    private void ScheduleIdleTrim()
+    {
+        if (_idleTrimTimer is null)
+        {
+            _idleTrimTimer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.ApplicationIdle)
+            {
+                Interval = TimeSpan.FromSeconds(10),
+            };
+            _idleTrimTimer.Tick += (_, _) =>
+            {
+                _idleTrimTimer.Stop();
+                TrimIdleMemory();
+            };
+        }
+        _idleTrimTimer.Stop();
+        _idleTrimTimer.Start();
+    }
+
+    private void TrimIdleMemory()
+    {
+        if (AnyWindowVisible()) return; // 面板（含顶置）、设置窗口、托盘菜单、弹出层都算
+        if (GC.GetTotalAllocatedBytes() - Interlocked.Read(ref _allocatedAtLastTrim) < IdleTrimMinAllocatedBytes) return;
+        if (Interlocked.Exchange(ref _idleTrimRunning, 1) == 1) return;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                long before = GC.GetGCMemoryInfo().TotalCommittedBytes;
+                // 先让已经没人用的整图 BitmapImage 走完终结器、释放 WIC 内存，再整理。不在 UI 线程上等终结器。
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                Interlocked.Exchange(ref _allocatedAtLastTrim, GC.GetTotalAllocatedBytes());
+                DiagLog.Write("memory", $"idle trim: gc committed {before >> 20} -> {GC.GetGCMemoryInfo().TotalCommittedBytes >> 20} MB");
+            }
+            catch (Exception ex)
+            {
+                DiagLog.Error("memory", "idle trim failed", ex);
+            }
+            finally
+            {
+                Volatile.Write(ref _idleTrimRunning, 0);
+            }
+        });
+    }
+
+    private static bool AnyWindowVisible()
+    {
+        foreach (PresentationSource source in PresentationSource.CurrentSources)
+        {
+            if (source is System.Windows.Interop.HwndSource { IsDisposed: false } hwnd && IsWindowVisible(hwnd.Handle))
+                return true;
+        }
+        return false;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
 
     private void Tray_ShowPanel(object sender, RoutedEventArgs e) => _mainWindow?.ShowPanel();
 
