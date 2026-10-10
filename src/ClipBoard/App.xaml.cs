@@ -111,8 +111,8 @@ public partial class App : Application
             if (args.PropertyName == nameof(AppSettings.StartWithWindows))
             {
                 // 用户在设置界面主动勾选：应用内设置是唯一权威，允许覆盖任务管理器里的禁用标记。
-                bool ok = StartupService.ApplyAll(Settings.StartWithWindows, userInitiated: true);
-                DiagLog.Write("autostart", $"user toggled -> {Settings.StartWithWindows}, verified={ok} | {StartupService.Describe()}");
+                bool ok = StartupService.ApplyAll(Settings.StartWithWindows, userInitiated: true, out var task);
+                DiagLog.Write("autostart", $"user toggled -> {Settings.StartWithWindows}, verified={ok} | {StartupService.Describe(task)}");
                 LogStartup($"toggle -> {Settings.StartWithWindows}, verified={ok}");
             }
         };
@@ -167,11 +167,13 @@ public partial class App : Application
         {
             using (DiagLog.Phase("autostart-sync"))
             {
-                // 静默同步：不覆盖用户在任务管理器里的禁用选择（userInitiated 默认 false）。
-                bool applied = StartupService.ApplyAll(Settings.StartWithWindows);
-                DiagLog.Write("autostart", $"desired={Settings.StartWithWindows} verified={applied} | {StartupService.Describe()}");
+                // 静默同步：不覆盖用户在任务管理器里的禁用选择（userInitiated 为 false）。
+                // 两行日志共用一份状态描述，任务快照也沿用 ApplyAll 刚查到的（仍有效时）：原来每次启动要连三次任务计划服务。
+                bool applied = StartupService.ApplyAll(Settings.StartWithWindows, userInitiated: false, out var task);
+                string state = StartupService.Describe(task);
+                DiagLog.Write("autostart", $"desired={Settings.StartWithWindows} verified={applied} | {state}");
                 LogStartup($"launched. desired={Settings.StartWithWindows} verified={applied} " +
-                           $"parent={DiagLog.ParentDescription} | {StartupService.Describe()}");
+                           $"parent={DiagLog.ParentDescription} | {state}");
             }
         }
         catch (Exception ex)

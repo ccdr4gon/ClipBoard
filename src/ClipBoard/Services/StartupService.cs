@@ -101,11 +101,17 @@ public static class StartupService
         {
             if (enable)
             {
-                if (ExpectedValue is null) return false; // 无合适目标：不写、也不破坏现有项
+                var expected = ExpectedValue;
+                if (expected is null) return false; // 无合适目标：不写、也不破坏现有项
                 using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
                                 ?? Registry.CurrentUser.CreateSubKey(RunKeyPath);
                 if (key is null) return false;
-                key.SetValue(ValueName, ExpectedValue, RegistryValueKind.String);
+                // 已经是一字不差的 REG_SZ 就不再重写：同值写入也会更新键的时间戳、触发注册表变更通知。
+                // 只要大小写、类型（如 REG_EXPAND_SZ）或内容有任何不同，照旧覆盖写入。
+                bool upToDate = key.GetValue(ValueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames) is string current
+                                && key.GetValueKind(ValueName) == RegistryValueKind.String
+                                && string.Equals(current, expected, StringComparison.Ordinal);
+                if (!upToDate) key.SetValue(ValueName, expected, RegistryValueKind.String);
 
                 var approved = ApprovedState;
                 if (approved is null || (approved == false && userInitiated))
@@ -138,8 +144,15 @@ public static class StartupService
     /// （见 <see cref="ScheduledTaskService"/> 的说明），任务计划是可靠的那条；
     /// Run 项保留作冗余，App 的单实例锁保证不会重复启动。
     /// </summary>
-    public static bool ApplyAll(bool enable, bool userInitiated = false)
+    public static bool ApplyAll(bool enable, bool userInitiated = false) => ApplyAll(enable, userInitiated, out _);
+
+    /// <param name="currentTask">
+    /// 本次查询到、且调用结束时仍然有效的登录任务快照，可交给 <see cref="Describe(TaskSnapshot?)"/> 免去再连一次任务计划服务；
+    /// 关闭、没有目标、或刚重新注册过时为 null（状态已变，必须重新查询）。
+    /// </param>
+    public static bool ApplyAll(bool enable, bool userInitiated, out TaskSnapshot? currentTask)
     {
+        currentTask = null;
         bool runOk = Apply(enable, userInitiated);
 
         bool taskOk;
@@ -159,8 +172,15 @@ public static class StartupService
                                                 or TaskStartupState.Mismatched
                                                 or TaskStartupState.Unavailable
                                     || (snap.State == TaskStartupState.Disabled && userInitiated);
-                taskOk = needRegister ? ScheduledTaskService.Register(target)
-                                      : snap.State == TaskStartupState.Ok;
+                if (needRegister)
+                {
+                    taskOk = ScheduledTaskService.Register(target);
+                }
+                else
+                {
+                    taskOk = snap.State == TaskStartupState.Ok;
+                    currentTask = snap;
+                }
             }
         }
         else
@@ -175,9 +195,12 @@ public static class StartupService
     public static TaskStartupState TaskState => ScheduledTaskService.Query(AutostartTarget).State;
 
     /// <summary>一行诊断文本：两条自启动路径的真实状态，写进日志用。</summary>
-    public static string Describe()
+    public static string Describe() => Describe(null);
+
+    /// <param name="knownTask">刚查到的登录任务快照（见 <see cref="ApplyAll(bool, bool, out TaskSnapshot?)"/>）；null 则重新查询。</param>
+    public static string Describe(TaskSnapshot? knownTask)
     {
-        var snap = ScheduledTaskService.Query(AutostartTarget);
+        var snap = knownTask ?? ScheduledTaskService.Query(AutostartTarget);
         return $"installed={IsInstalled} runningFrom={ProcessPath} target={AutostartTarget ?? "<none>"} " +
                $"| run: value={CurrentValue() ?? "<none>"} approved={ApprovedStateText} verified={RunVerified} " +
                $"| task: state={snap.State} command={snap.Command ?? "<none>"}";

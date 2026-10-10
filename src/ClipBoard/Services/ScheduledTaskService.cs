@@ -77,16 +77,15 @@ public static class ScheduledTaskService
     /// <summary>一次 COM 往返拿到某个任务的状态与目标命令。</summary>
     private static TaskSnapshot QueryTask(string taskName, string? expectedExe)
     {
-        object? service = null;
+        object? service = null, folder = null, task = null;
         try
         {
             service = CreateService();
             if (service is null) return new TaskSnapshot(TaskStartupState.Unavailable, null);
 
-            var folder = Call(service, "GetFolder", "\\");
+            folder = Call(service, "GetFolder", "\\");
             if (folder is null) return new TaskSnapshot(TaskStartupState.Unavailable, null);
 
-            object? task;
             try
             {
                 task = Call(folder, "GetTask", taskName);
@@ -124,6 +123,9 @@ public static class ScheduledTaskService
         }
         finally
         {
+            // 每次调用的 COM 对象都只在本次使用：按创建的逆序立即释放，不必等 GC 回收 RCW。
+            Release(task);
+            Release(folder);
             Release(service);
         }
     }
@@ -146,16 +148,16 @@ public static class ScheduledTaskService
 
     private static bool RegisterTask(string taskName, string xml)
     {
-        object? service = null;
+        object? service = null, folder = null, registered = null;
         try
         {
             service = CreateService();
             if (service is null) return false;
 
-            var folder = Call(service, "GetFolder", "\\");
+            folder = Call(service, "GetFolder", "\\");
             if (folder is null) return false;
 
-            Call(folder, "RegisterTask",
+            registered = Call(folder, "RegisterTask",
                 taskName, xml, CreateOrUpdate,
                 Type.Missing, Type.Missing, InteractiveToken, Type.Missing);
 
@@ -169,19 +171,21 @@ public static class ScheduledTaskService
         }
         finally
         {
+            Release(registered);
+            Release(folder);
             Release(service);
         }
     }
 
     private static bool UnregisterTask(string taskName)
     {
-        object? service = null;
+        object? service = null, folder = null;
         try
         {
             service = CreateService();
             if (service is null) return false;
 
-            var folder = Call(service, "GetFolder", "\\");
+            folder = Call(service, "GetFolder", "\\");
             if (folder is null) return false;
 
             try
@@ -203,6 +207,7 @@ public static class ScheduledTaskService
         }
         finally
         {
+            Release(folder);
             Release(service);
         }
     }
