@@ -155,7 +155,7 @@ public class ClipboardMonitor : IDisposable
             var captured = change;
             // 网络读取不占用窗口线程；按捕获顺序交付，慢 GIF 不会覆盖更晚的历史顺序。
             var download = gifUrl == null ? Task.FromResult<byte[]?>(null)
-                : GifHelper.DownloadGifAsync(gifUrl, _shutdown.Token);
+                : StartGifDownload(gifUrl, _shutdown.Token);
             await previous;
             var bytes = await download;
             if (_disposed) return;
@@ -173,6 +173,11 @@ public class ClipboardMonitor : IDisposable
             // 单次读取失败不阻断后续剪贴板事件。
         }
     }
+
+    // 第一个 await 之前的部分（首次创建 HttpClient、加载网络程序集、系统代理探测）是同步执行的，
+    // 放到线程池上开始，不占窗口线程。令牌在窗口线程上取好再传入：退出时 CTS 会被释放。
+    private static Task<byte[]?> StartGifDownload(string url, CancellationToken token)
+        => Task.Run(() => GifHelper.DownloadGifAsync(url, token));
 
     private static BitmapSource FixAlphaChannel(BitmapSource src)
     {

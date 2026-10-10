@@ -245,6 +245,13 @@ internal static class Program
             await stream.WriteAsync(bytes);
         }, url => GifHelper.DownloadGifAsync(url)).GetAwaiter().GetResult();
         Check(result?.SequenceEqual(bytes) == true, "下载后的 GIF 数据不完整");
+        // 没有长度头：读到连接关闭为止。
+        var unsized = WithHttpServer(async stream =>
+        {
+            await stream.WriteAsync("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"u8.ToArray());
+            await stream.WriteAsync(bytes);
+        }, url => GifHelper.DownloadGifAsync(url)).GetAwaiter().GetResult();
+        Check(unsized?.SequenceEqual(bytes) == true, "没有长度头时下载的 GIF 数据不完整");
     }
 
     private static void GifBodyCancellation()

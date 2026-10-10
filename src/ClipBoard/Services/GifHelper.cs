@@ -41,7 +41,8 @@ public static class GifHelper
             using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return null;
             if (resp.Content.Headers.ContentLength is long len && len > MaxBytes) return null;
-            using var ms = new System.IO.MemoryStream();
+            // 按声明的长度预留，免去逐步翻倍扩容；读取方式和上限检查不变。
+            using var ms = new System.IO.MemoryStream(resp.Content.Headers.ContentLength is long expected && expected > 0 ? (int)expected : 0);
             using var s = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
             byte[] buf = new byte[8192];
             int total = 0, n;
@@ -51,7 +52,8 @@ public static class GifHelper
                 if (total > MaxBytes) return null;
                 ms.Write(buf, 0, n);
             }
-            var bytes = ms.ToArray();
+            // 正文恰好填满内部数组（长度与声明一致）时直接使用，省去最后一次整份复制。
+            var bytes = ms.Length == ms.Capacity ? ms.GetBuffer() : ms.ToArray();
             if (bytes.Length < 6) return null;
             if (!bytes.AsSpan(0, 6).SequenceEqual("GIF87a"u8)
                 && !bytes.AsSpan(0, 6).SequenceEqual("GIF89a"u8)) return null;
