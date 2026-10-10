@@ -66,7 +66,13 @@ public sealed class HistoryStore(FavoritesStore favorites)
     public void InsertExisting(ClipItem item)
     {
         Items.Insert(0, item);
-        while (Items.Count > 200) Remove(Items[^1]);
+        // 淘汰最旧的条目只清理文件，最后统一保存一次（每次保存都要复制整份数据）。
+        while (Items.Count > 200)
+        {
+            var old = Items[^1];
+            Items.RemoveAt(Items.Count - 1);
+            favorites.DeleteUnusedBlob(old);
+        }
         favorites.Save();
     }
     public bool Detach(ClipItem item) => Items.Remove(item);
@@ -76,5 +82,16 @@ public sealed class HistoryStore(FavoritesStore favorites)
         favorites.DeleteUnusedBlob(item);
         favorites.Save();
     }
-    public void Clear() { foreach (var item in Items.ToArray()) Remove(item); }
+    public void Clear()
+    {
+        // 顺序和逐条通知不变，只是清空后保存一次，而不是每删一条保存一次。
+        bool removed = false;
+        foreach (var item in Items.ToArray())
+        {
+            if (!Items.Remove(item)) continue;
+            favorites.DeleteUnusedBlob(item);
+            removed = true;
+        }
+        if (removed) favorites.Save();
+    }
 }
