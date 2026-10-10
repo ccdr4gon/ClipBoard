@@ -286,7 +286,70 @@ public partial class App : Application
             timer.Start();
         }
 
-        StartTrayTooltipWatchdog();
+        // explorer 重启（任务栏重建）后 Hardcodet 会重新添加图标，但不带系统 tooltip，要补发一次。
+        // 原来靠 15 秒一次的轮询顺带补上；现在挂到 Hardcodet 自己接收 TaskbarCreated 的消息窗口上，
+        // 只在真的重建时补，进程空闲时不再有定时唤醒。取不到（库升级改了内部字段）就退回原来的 15 秒轮询。
+        if (HookTaskbarCreated()) HookStuckTooltipGuard();
+        else StartTrayTooltipWatchdog();
+    }
+
+    private bool HookTaskbarCreated()
+    {
+        var sinkField = typeof(TaskbarIcon).GetField("messageSink", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        if (sinkField?.GetValue(_trayIcon) is not Hardcodet.Wpf.TaskbarNotification.Interop.WindowMessageSink sink)
+        {
+            DiagLog.Write("tray", "messageSink not found; falling back to the 15 s native tooltip refresh");
+            return false;
+        }
+        // TaskbarIcon 的构造函数先订阅了它自己的 OnTaskbarCreated（重新 NIM_ADD），这里后订阅，所以总在它之后执行。
+        // 回调跑在 Hardcodet 的原生窗口过程里，异常不能从这里冒出去：只投递，补发交给 Dispatcher。
+        sink.TaskbarCreated += () => Dispatcher.BeginInvoke(new Action(OnTaskbarRecreated));
+        return true;
+    }
+
+    private System.Windows.Threading.DispatcherTimer? _tipRetry;
+    private void OnTaskbarRecreated()
+    {
+        bool ok = ApplyNativeTrayTip(log: false);
+        DiagLog.Write("tray", $"TaskbarCreated: icon created={_trayIcon?.IsTaskbarIconCreated} native tooltip set={ok}");
+        if (ok || _trayIcon is not { IsTaskbarIconCreated: true }) return;
+        // explorer 刚起来时可能还忙：像原来的轮询一样每 15 秒再试，成功（或图标没了）就停。
+        if (_tipRetry is null)
+        {
+            _tipRetry = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+            _tipRetry.Tick += (_, _) =>
+            {
+                if (ApplyNativeTrayTip(log: false) || _trayIcon is not { IsTaskbarIconCreated: true }) _tipRetry.Stop();
+            };
+        }
+        _tipRetry.Start();
+    }
+
+    // 兜底：XAML 不设 ToolTipText，TrayToolTipResolved 应恒为 null、贴条不可能出现。若日后有人加回托盘 tooltip，
+    // Hardcodet 每次打开它（包括 shell 无悬停发来的 NIN_POPUPOPEN）之后都会发 TrayToolTipOpen：
+    // 从那一刻起 30 秒还开着就强制关闭并记日志，与原来轮询看门狗的保护相同，只是不必常驻定时器。
+    private System.Windows.Threading.DispatcherTimer? _stuckTipTimer;
+    private void HookStuckTooltipGuard()
+    {
+        _trayIcon!.TrayToolTipOpen += (_, _) =>
+        {
+            if (_stuckTipTimer is null)
+            {
+                _stuckTipTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+                _stuckTipTimer.Tick += (_, _) =>
+                {
+                    _stuckTipTimer.Stop();
+                    if (_trayIcon?.TrayToolTipResolved is System.Windows.Controls.ToolTip { IsOpen: true } tip)
+                    {
+                        tip.IsOpen = false;
+                        DiagLog.Write("tray", "watchdog force-closed a stuck tray tooltip");
+                    }
+                };
+            }
+            _stuckTipTimer.Stop();
+            _stuckTipTimer.Start();
+        };
+        _trayIcon.TrayToolTipClose += (_, _) => _stuckTipTimer?.Stop();
     }
 
     private void CloseTrayPopups()
@@ -300,9 +363,8 @@ public partial class App : Application
             menu.IsOpen = false;
     }
 
-    // 兜底看门狗：XAML 已不再设置 ToolTipText，TrayToolTipResolved 应恒为 null、贴条不可能出现。
-    // 但仍每 15 秒轮询一次（每次都取当前实例，不依赖事件挂接），发现任何打开超过 ~30 秒的
-    // 托盘 tooltip 一律强制关闭并记日志——若日后有人重新加回 ToolTipText，这层保护依然有效。
+    // 退路（取不到 Hardcodet 的消息窗口时才用）：原来的轮询看门狗。每 15 秒取一次当前 tooltip 实例，
+    // 发现任何打开超过 ~30 秒的托盘 tooltip 一律强制关闭并记日志，顺带补发系统 tooltip。
     private System.Windows.Threading.DispatcherTimer? _tipWatchdog;
     private DateTime _tipOpenSince = DateTime.MinValue;
     private void StartTrayTooltipWatchdog()
@@ -337,14 +399,14 @@ public partial class App : Application
     // WPF tooltip 那样因收不到 NIN_POPUPCLOSE 而变成孤儿贴条。Hardcodet 不暴露这个选项，
     // 所以取它内部的窗口句柄和图标 ID，自己发一次 NIM_MODIFY；ToolTipText 仍保持不设置。
     private const string TrayTipText = "ClipBoard — Ctrl+Alt+V";
-    private void ApplyNativeTrayTip(bool log = true)
+    private bool ApplyNativeTrayTip(bool log = true)
     {
         try
         {
-            if (_trayIcon is not { IsTaskbarIconCreated: true }) return;
+            if (_trayIcon is not { IsTaskbarIconCreated: true }) return false;
             var field = typeof(TaskbarIcon).GetField("iconData", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             var iconData = field?.GetValue(_trayIcon);
-            if (iconData is null) { if (log) DiagLog.Write("tray", "native tooltip skipped: iconData not found"); return; }
+            if (iconData is null) { if (log) DiagLog.Write("tray", "native tooltip skipped: iconData not found"); return false; }
             var type = iconData.GetType();
             var data = new NotifyIconDataW
             {
@@ -356,10 +418,12 @@ public partial class App : Application
             };
             bool ok = Shell_NotifyIconW(NimModify, ref data);
             if (log) DiagLog.Write("tray", $"native tooltip set: {ok}");
+            return ok;
         }
         catch (Exception ex) when (ex is System.Reflection.TargetException or InvalidCastException or NullReferenceException)
         {
             if (log) DiagLog.Write("tray", "native tooltip failed: " + ex.Message);
+            return false;
         }
     }
 
