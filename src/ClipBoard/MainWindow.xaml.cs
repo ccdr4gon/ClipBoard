@@ -848,24 +848,24 @@ public partial class MainWindow : Window
             {
                 var target = _preClickForeground;
                 Log($"Pinned paste: target={target.ToInt64():X} was_fg={(GetForegroundWindow() == target)} kind={item.Kind}");
-                PasteInto(target);
+                _ = PasteInto(target);
             }
             return;
         }
 
         HidePanel();
         var pasteTarget = _foregroundBeforeShow;
-        Dispatcher.BeginInvoke(new Action(() => PasteInto(pasteTarget)), System.Windows.Threading.DispatcherPriority.Background);
+        Dispatcher.BeginInvoke(new Action(() => _pendingPaste = PasteInto(pasteTarget)), System.Windows.Threading.DispatcherPriority.Background);
         }
         catch (Exception ex) { Log("PasteSelected FAILED: " + ex.Message); }
     }
 
-    private static void PasteInto(IntPtr target)
+    private static Task PasteInto(IntPtr target)
     {
-        if (target == IntPtr.Zero) return;
+        if (target == IntPtr.Zero) return Task.CompletedTask;
         // 焦点要在本程序仍持有前台权限时立即交还；等待 Shift 之后系统可能不再允许切换。
         if (GetForegroundWindow() != target) SetForegroundWindow(target);
-        _ = SendPasteWhenShiftReleasedAsync(target);
+        return SendPasteWhenShiftReleasedAsync(target);
     }
 
     // Shift+点击 / Shift+Enter 时用户可能还按着 Shift，目标程序会收到 Ctrl+Shift+V（VS Code 打开预览、Word 粘贴格式）。
@@ -1020,6 +1020,35 @@ public partial class MainWindow : Window
     {
         FlushDeferredPromotions();
         Hide();
+        QueueHiddenReset();
+    }
+
+    private bool _hiddenResetQueued;
+    private Task _pendingPaste = Task.CompletedTask;
+
+    // 隐藏后、空闲时先把面板恢复成下次打开要显示的样子（清空搜索、选中第一项、滚回顶部），
+    // 下次打开的首帧就不必再重建条目。ShowPanelCore 仍照样做同样的复位：这里没来得及跑、
+    // 或之后被剪贴板变化等打乱时由它兜底。Hide() 会触发 OnDeactivated 再调一次 HidePanel，用标志只排一次。
+    private void QueueHiddenReset()
+    {
+        if (_hiddenResetQueued || _historyTab == null) return;
+        _hiddenResetQueued = true;
+        Dispatcher.BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                await _pendingPaste; // Shift+Enter 粘贴要等 Shift 松开才发 Ctrl+V，不让复位挤在它前面
+                if (IsVisible) return; // 已经重新打开，ShowPanelCore 已复位
+                var lb = GetActiveListBox();
+                if (lb == null) return;
+                // 隐藏窗口里新建的 GIF 卡片会一直播放（WpfAnimatedGif 只在可见性变化时暂停），这种情况仍留到打开时处理。
+                if (ReferenceEquals(lb.ItemsSource, _imageView) && _imageView.Any(i => i.Kind == ClipKind.Gif)) return;
+                if (!string.IsNullOrEmpty(SearchBox.Text)) SearchBox.Text = ""; // OnSearchChanged 会清过滤并 ResetListPosition
+                else ResetListPosition();
+            }
+            catch (Exception ex) { Log("HiddenReset FAILED: " + ex.Message); }
+            finally { _hiddenResetQueued = false; }
+        }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
     }
 
     private void FlushDeferredPromotions()
