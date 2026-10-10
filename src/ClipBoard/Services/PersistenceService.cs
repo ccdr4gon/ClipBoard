@@ -53,9 +53,7 @@ public class PersistenceService
         try
         {
             if (!File.Exists(_dataFile)) return new PersistedData();
-            var json = File.ReadAllText(_dataFile);
-            if (string.IsNullOrWhiteSpace(json)) return new PersistedData();
-            var data = JsonSerializer.Deserialize<PersistedData>(json, _jsonOpts) ?? new PersistedData();
+            var data = ReadDataFile() ?? new PersistedData();
             // 旧版保存时遗漏了原图尺寸，从文件头补回，避免把缩略图尺寸当成原图尺寸。
             foreach (var item in data.History.Concat(data.PinnedHistory).Concat(data.Favorites))
             {
@@ -72,6 +70,33 @@ public class PersistenceService
             return new PersistedData();
         }
     }
+
+    // 直接解析 UTF-8 字节，省去先把整个文件解码成 UTF-16 字符串、反序列化时再转回 UTF-8 的两遍拷贝。
+    // 字节解析比 ReadAllText 严格（不认 UTF-16/32 BOM、空文件、非法 UTF-8）。失败时完整走一遍原来的读法，结果与以前一致；
+    // 不能直接当成空数据，否则下一次保存会把用户的历史覆盖掉。
+    private PersistedData? ReadDataFile()
+    {
+        var bytes = File.ReadAllBytes(_dataFile);
+        try
+        {
+            return JsonSerializer.Deserialize<PersistedData>(WithoutUtf8Bom(bytes), _jsonOpts);
+        }
+        catch
+        {
+            var json = File.ReadAllText(_dataFile);
+            if (string.IsNullOrWhiteSpace(json)) return new PersistedData();
+            return JsonSerializer.Deserialize<PersistedData>(json, _jsonOpts);
+        }
+    }
+
+    // ReadAllText 会去掉 UTF-8 BOM，字节解析器不会。
+    private static ReadOnlySpan<byte> Utf8Bom => [0xEF, 0xBB, 0xBF];
+    private static ReadOnlySpan<byte> WithoutUtf8Bom(byte[] bytes)
+        => bytes.AsSpan().StartsWith(Utf8Bom) ? bytes.AsSpan(3) : bytes;
+
+    // JSON 直接按 UTF-8 写进文件，不再先生成整段字符串。打开方式与 File.WriteAllText 相同（覆盖、FileShare.Read、无 BOM）；
+    // 序列化器自带缓冲，文件流不再加一层。
+    private static FileStream CreateJsonFile(string path) => new(path, FileMode.Create, FileAccess.Write, FileShare.Read, bufferSize: 0);
 
     public void SaveDebounced(PersistedData snapshot)
     {
@@ -99,7 +124,9 @@ public class PersistenceService
             try
             {
                 var tmp = _dataFile + ".tmp";
-                File.WriteAllText(tmp, JsonSerializer.Serialize(_pendingSnapshot, _jsonOpts));
+                // 必须先关闭临时文件再替换，否则 Windows 上替换会因共享冲突失败。
+                using (var stream = CreateJsonFile(tmp))
+                    JsonSerializer.Serialize(stream, _pendingSnapshot, _jsonOpts);
                 if (File.Exists(_dataFile)) File.Replace(tmp, _dataFile, null);
                 else File.Move(tmp, _dataFile);
                 _pendingSnapshot = null;
@@ -259,7 +286,18 @@ public class PersistenceService
     public string SaveRichBlob(RichContent rich)
     {
         var name = Guid.NewGuid().ToString("N") + ".rich.json";
-        File.WriteAllText(Path.Combine(_blobsDir, name), JsonSerializer.Serialize(rich, RichContentJsonContext.Default.RichContent));
+        var full = Path.Combine(_blobsDir, name);
+        try
+        {
+            using var stream = CreateJsonFile(full);
+            JsonSerializer.Serialize(stream, rich, RichContentJsonContext.Default.RichContent);
+        }
+        catch
+        {
+            // 以前序列化失败时不会留下文件；流式写出后同样删掉写了一半的文件。
+            try { File.Delete(full); } catch { }
+            throw;
+        }
         return name;
     }
 
@@ -269,7 +307,11 @@ public class PersistenceService
         {
             if (string.IsNullOrEmpty(name)) return null;
             var full = GetBlobPath(name);
-            return File.Exists(full) ? JsonSerializer.Deserialize(File.ReadAllText(full), RichContentJsonContext.Default.RichContent) : null;
+            if (!File.Exists(full)) return null;
+            var bytes = File.ReadAllBytes(full);
+            // 同 data.json：字节解析失败（UTF-16 等）时按原来的方式再读一次。
+            try { return JsonSerializer.Deserialize(WithoutUtf8Bom(bytes), RichContentJsonContext.Default.RichContent); }
+            catch { return JsonSerializer.Deserialize(File.ReadAllText(full), RichContentJsonContext.Default.RichContent); }
         }
         catch { return null; }
     }

@@ -498,6 +498,8 @@ internal static class Program
             ("UTF-8", legacy, 4),
             ("UTF-8 BOM", [0xEF, 0xBB, 0xBF, .. legacy], 4),
             ("UTF-16 BOM", [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(Encoding.UTF8.GetString(legacy))], 4),
+            ("UTF-16BE BOM", [.. Encoding.BigEndianUnicode.GetPreamble(), .. Encoding.BigEndianUnicode.GetBytes(Encoding.UTF8.GetString(legacy))], 4),
+            ("UTF-32 BOM", [.. Encoding.UTF32.GetPreamble(), .. Encoding.UTF32.GetBytes(Encoding.UTF8.GetString(legacy))], 4),
             ("非法 UTF-8", invalidUtf8, 1),
         };
         foreach (var (name, bytes, count) in variants)
