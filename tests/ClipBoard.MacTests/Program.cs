@@ -47,6 +47,7 @@ internal static class Program
                     ("Windows 风格历史布局、键盘选择和 Control+Command+V", PanelLayout),
                     ("重新打开清空搜索、回到顶部；单击和回车直接粘贴，Shift 为纯文本", PanelReopenAndPaste),
                     ("带格式文本重建编号、显示标记并提供纯文本粘贴", RichTextItems),
+                    ("切换标签只替换选中状态变化的标签", TabsReplaceOnlyChanged),
                     ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
@@ -283,6 +284,24 @@ internal static class Program
         other.ContextMenu.Close();
         App.History.Remove(item);
         Check(!File.Exists(App.Persistence.GetBlobPath(item.RichBlobName!)), "删除条目后格式文件未清理");
+    }
+    private static async Task TabsReplaceOnlyChanged()
+    {
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)App.Current!.ApplicationLifetime!).MainWindow!;
+        if (!window.IsVisible) ((App)App.Current!).ShowPanel();
+        Button[] Tabs() => window.GetVisualDescendants().OfType<Button>().Where(b => b.Classes.Contains("tab")).ToArray();
+        // 第一次排版后的那组标签会整排重建一次（回退字体可能与之后不同），之后才保留未变的标签。
+        window.SelectView("history"); await Task.Delay(100);
+        window.SelectView("history"); await Task.Delay(100);
+        var before = Tabs();
+        window.SelectView("images"); await Task.Delay(100);
+        var after = Tabs();
+        Check(before.Length == after.Length && after.Length >= 4, "标签数量变了");
+        Check(after[1].Classes.Contains("selected") && !after[0].Classes.Contains("selected") && after.Count(t => t.Classes.Contains("selected")) == 1, "选中标签不对");
+        Check(!ReferenceEquals(before[0], after[0]) && !ReferenceEquals(before[1], after[1]), "选中状态变化的标签应换成新按钮");
+        Check(before.Skip(2).Zip(after.Skip(2)).All(p => ReferenceEquals(p.First, p.Second)), "未变化的标签被重建");
+        window.SelectView("history"); await Task.Delay(100);
+        Check(Tabs()[0].Classes.Contains("selected"), "切回历史后选中标签不对");
     }
     private static async Task SettingsDialogs(bool native)
     {

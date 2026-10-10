@@ -24,6 +24,9 @@ public sealed partial class MainWindow
     private readonly TextBlock _entryCount = Label("— 0 entries —", 10.5, true);
     private bool _pinned, _contextOpen;
     private IReadOnlyList<ClipItem> _shown = [];
+    private readonly List<(string Mode, FavoriteFolder? Folder, string Name, string Subtitle)> _tabKeys = [];
+    private Button? _focusedTab; // 窗口里最后拿到焦点的是哪个标签（不是标签则为 null）
+    private bool _tabsSettled;
     private static readonly FontFamily Serif = new("Georgia, PingFang SC, Segoe UI");
     private static readonly FontFamily Mono = new("Consolas, Menlo, monospace");
     private static IBrush Muted => Brush.Parse("#857867");
@@ -113,14 +116,37 @@ public sealed partial class MainWindow
     {
         if (await Dialogs.Confirm(this, "清空历史", "删除全部未置顶的历史？收藏和置顶内容会保留。")) App.History.Clear();
     });
-    private void RenderTabs()
+    // 标签列表没变时只换掉选中状态变化的标签（每次粘贴、切换标签都会走到这里），收藏夹增删、改名、换类型才整排重建。
+    // 换下的标签总是新建按钮而不是改样式类：点下的按钮有按压缩放动画，也带着焦点，原先它总被丢弃。
+    // 同理，拿到过焦点、这次又不换的标签不保留，改为整排重建。
+    // 一组标签第一次排版时，Avalonia 的回退字体可能解析得与之后不同（例如启动时的中文粗体标题），原先下一次重绘
+    // 就全部换掉；所以同一组标签排版过之后要再整排重建一次（_tabsSettled），之后才保留未变的标签。
+    private void RenderTabs(bool replaceSelected = false)
     {
-        _tabs.Children.Clear();
-        foreach (var (mode, name, subtitle) in new[] { ("history", "历史", "HISTORY"), ("images", "图片", "IMAGES"), ("emoji", "emoji", "EMOJI") })
-            AddTab(name, subtitle, mode, null);
-        foreach (var folder in App.Favorites.Folders) AddTab(folder.Name, folder.Kind == FolderKind.Meme ? "MEMES" : "FOLDER", "folder", folder);
+        var keys = new List<(string Mode, FavoriteFolder? Folder, string Name, string Subtitle)>(3 + App.Favorites.Folders.Count)
+            { ("history", null, "历史", "HISTORY"), ("images", null, "图片", "IMAGES"), ("emoji", null, "emoji", "EMOJI") };
+        foreach (var folder in App.Favorites.Folders) keys.Add(("folder", folder, folder.Name, folder.Kind == FolderKind.Meme ? "MEMES" : "FOLDER"));
+        bool same = _tabs.Children.Count == keys.Count && keys.SequenceEqual(_tabKeys);
+        if (same && _tabsSettled)
+        {
+            var replace = new List<int>();
+            for (int i = 0; i < keys.Count; i++)
+            {
+                bool selected = _mode == keys[i].Mode && _folder == keys[i].Folder;
+                if (selected != _tabs.Children[i].Classes.Contains("selected") || replaceSelected && selected) replace.Add(i);
+            }
+            int focused = _focusedTab == null ? -1 : _tabs.Children.IndexOf(_focusedTab);
+            if (focused < 0 || replace.Contains(focused))
+            {
+                foreach (int i in replace) { _tabs.Children.RemoveAt(i); _tabs.Children.Insert(i, CreateTab(keys[i].Name, keys[i].Subtitle, keys[i].Mode, keys[i].Folder)); }
+                return;
+            }
+        }
+        _tabsSettled = same && _tabs.Children.All(tab => tab.DesiredSize != default);
+        _tabs.Children.Clear(); _tabKeys.Clear(); _tabKeys.AddRange(keys);
+        foreach (var (mode, folder, name, subtitle) in keys) _tabs.Children.Add(CreateTab(name, subtitle, mode, folder));
     }
-    private void AddTab(string name, string subtitle, string mode, FavoriteFolder? folder)
+    private Button CreateTab(string name, string subtitle, string mode, FavoriteFolder? folder)
     {
         var header = new StackPanel();
         var title = Label(name, 15); title.FontWeight = FontWeight.SemiBold;
@@ -135,11 +161,11 @@ public sealed partial class MainWindow
             menu.Opened += (_, _) => _contextOpen = true; menu.Closed += (_, _) => _contextOpen = false;
             tab.ContextMenu = menu;
         }
-        _tabs.Children.Add(tab);
+        return tab;
     }
     internal void SelectView(string mode, FavoriteFolder? folder = null)
     {
-        _mode = mode; _folder = folder; RenderTabs(); RenderToolbar(); RenderCards(); ResetPosition();
+        _mode = mode; _folder = folder; RenderTabs(replaceSelected: true); RenderToolbar(); RenderCards(); ResetPosition();
     }
     public void SelectFolder(FavoriteFolder folder) => SelectView("folder", folder);
     private void RenderToolbar()

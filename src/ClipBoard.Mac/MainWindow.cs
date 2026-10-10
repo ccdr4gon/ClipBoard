@@ -39,6 +39,9 @@ public sealed partial class MainWindow : Window
         SubscribeFolders(); RenderTabs(); RenderToolbar(); RenderCards();
         Closing += (_, e) => { if (!Application.Quitting) { e.Cancel = true; Hide(); } };
         AddHandler(KeyDownEvent, OnPanelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        // 记下最后拿到焦点的标签，重绘标签时不保留它（见 RenderTabs）。
+        AddHandler(GotFocusEvent, (_, e) => _focusedTab = (e.Source as Visual)?.FindAncestorOfType<Button>(includeSelf: true) is { } tab && tab.Parent == _tabs ? tab : null,
+            Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
         // 与 Windows 一致：单击即粘贴，按住 Shift 粘贴为纯文本。在列表上处理，点到行内空白或内边距也算；
         // Control+单击是 macOS 的右键，留给菜单。
         _items.Tapped += async (_, e) =>
