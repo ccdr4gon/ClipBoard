@@ -80,14 +80,48 @@ public static class DiagLog
         {
             lock (Gate)
             {
-                Directory.CreateDirectory(Dir);
-                Roll();
-                File.AppendAllText(LogPath,
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} +{Uptime.ElapsedMilliseconds,-6} [{SessionId}] [{category}] {message}{Environment.NewLine}",
-                    Encoding.UTF8);
+                // 每行仍是一次「打开-追加-关闭」，崩溃不丢行，也不长期占着文件（保活拉起的进程也要写）。
+                // 文件长度直接从句柄取，省掉每行一次的建目录和 FileInfo 查询；写入的字节与 AppendAllText 完全相同。
+                var handle = OpenLog();
+                try
+                {
+                    long length = RandomAccess.GetLength(handle);
+                    if (length >= MaxBytes)
+                    {
+                        handle.Dispose(); // 自己的句柄也会挡住 File.Move
+                        Roll();
+                        handle = OpenLog();
+                        length = RandomAccess.GetLength(handle);
+                    }
+                    var line = Encoding.UTF8.GetBytes(
+                        $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} +{Uptime.ElapsedMilliseconds,-6} [{SessionId}] [{category}] {message}{Environment.NewLine}");
+                    // 与 AppendAllText(..., Encoding.UTF8) 一致：只有空文件才写 BOM。
+                    if (length == 0) line = [.. Utf8Bom, .. line];
+                    RandomAccess.Write(handle, line, length);
+                }
+                finally
+                {
+                    handle.Dispose();
+                }
             }
         }
         catch { }
+    }
+
+    private static readonly byte[] Utf8Bom = Encoding.UTF8.GetPreamble();
+
+    private static Microsoft.Win32.SafeHandles.SafeFileHandle OpenLog()
+    {
+        try
+        {
+            return File.OpenHandle(LogPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // 首次运行，或目录在运行中被删：建好再开（原来每行都先 CreateDirectory）。
+            Directory.CreateDirectory(Dir);
+            return File.OpenHandle(LogPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+        }
     }
 
     /// <summary>记录异常（带来源标签），堆栈完整写入。</summary>
