@@ -23,6 +23,7 @@ public sealed partial class MainWindow
     private readonly TextBlock _counter = Label("NO. 000", 10.5, true);
     private readonly TextBlock _entryCount = Label("— 0 entries —", 10.5, true);
     private bool _pinned, _contextOpen;
+    private IReadOnlyList<ClipItem> _shown = [];
     private static readonly FontFamily Serif = new("Georgia, PingFang SC, Segoe UI");
     private static readonly FontFamily Mono = new("Consolas, Menlo, monospace");
     private static IBrush Muted => Brush.Parse("#857867");
@@ -159,6 +160,7 @@ public sealed partial class MainWindow
         _items.Classes.Set("history", rows); _items.Classes.Set("tiles", !rows && _mode != "emoji"); _items.Classes.Set("emoji", _mode == "emoji");
         _items.ItemsPanel = new FuncTemplate<Panel?>(() => rows ? new StackPanel() : new WrapPanel());
         var items = VisibleItems;
+        _shown = items; // 先于 ItemsSource 赋值：行号从这份列表里取
         _items.ItemsSource = items;
         _items.SelectedItem = items.FirstOrDefault(i => i.Id == selected);
         _counter.Text = $"NO. {App.History.Items.Count + App.Favorites.PinnedHistory.Count + App.Favorites.Folders.Sum(f => f.Items.Count):D3}";
@@ -170,11 +172,19 @@ public sealed partial class MainWindow
             : _mode == "history" || _folder?.Kind == FolderKind.Normal ? HistoryRow(item) : ImageTile(item);
         AttachItemActions(control, item); return control;
     }
+    // 行号取自正在显示的列表（与 IndexOf 一样按引用找第一个）。原先每行都重新筛选全部条目再查找，
+    // 一次渲染是 O(n²)，搜索时每个条目还要拼接一遍全文。
+    private int RowNumber(ClipItem item)
+    {
+        var shown = _shown;
+        for (int i = 0; i < shown.Count; i++) if (ReferenceEquals(shown[i], item)) return i + 1;
+        return VisibleItems.ToList().IndexOf(item) + 1;
+    }
     private Control HistoryRow(ClipItem item)
     {
         // 透明背景让整行（不只是文字）都能响应右键菜单。
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("22,*,Auto"), Background = Brushes.Transparent };
-        var index = Label((VisibleItems.ToList().IndexOf(item) + 1).ToString("D2"), 10, true); index.TextAlignment = TextAlignment.Right; row.Children.Add(index);
+        var index = Label(RowNumber(item).ToString("D2"), 10, true); index.TextAlignment = TextAlignment.Right; row.Children.Add(index);
         var meta = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
         if (item.IsPinned) meta.Children.Add(Label("📌", 11));
         if (item.HasRichText)
