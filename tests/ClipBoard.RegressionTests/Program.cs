@@ -52,6 +52,7 @@ internal static class Program
             ("格式文件随条目保存、共享和清理", RichBlobLifecycle),
             ("同一文字再次复制带上格式时补到原条目", RichAddedToExistingText),
             ("截图透明度全为 0 时补成不透明，其余图片原样返回", ClipboardAlphaFix),
+            ("图片签名的 XXH64 与标准结果一致且不受分块影响", ImageSigHash),
         ];
         int failures = 0;
         foreach (var (name, test) in tests)
@@ -363,6 +364,36 @@ internal static class Program
         f.History.AddText("同一段文字", RichText.Create("<p>同一段<b>文字</b></p>", null));
         Check(f.History.Items.Count == 1 && f.History.Items[0].HasRichText, "格式没有补到原条目");
         Check(RichText.Create("纯文本", "不是 RTF") == null, "无效格式被保存");
+    }
+
+    private static void ImageSigHash()
+    {
+        static ulong Hash(ReadOnlySpan<byte> data, int split)
+        {
+            var hash = new HistoryStore.XxHash64();
+            hash.Append(data[..split]);
+            hash.Append(data[split..]);
+            return hash.Finish();
+        }
+        // xxHash 公布的 XXH64（种子 0）参考值；最后一条超过 32 字节，覆盖分组路径。
+        (string Text, ulong Expected)[] vectors =
+        [
+            ("", 0xEF46DB3751D8E999), ("a", 0xD24EC4F1A98C6E5B), ("abc", 0x44BC2CF5AD770999),
+            ("Nobody inspects the spammish repetition", 0xFBCEA83C8A378BF1),
+        ];
+        foreach (var (text, expected) in vectors)
+        {
+            var bytes = Encoding.ASCII.GetBytes(text);
+            for (int split = 0; split <= bytes.Length; split++)
+                Check(Hash(bytes, split) == expected, $"\"{text}\" 的 XXH64 不对");
+        }
+        var data = new byte[100_003];
+        new Random(3).NextBytes(data);
+        var whole = Hash(data, 0);
+        var chunked = new HistoryStore.XxHash64();
+        for (int p = 0, n = 1; p < data.Length; p += n, n = n * 3 % 7001 + 1)
+            chunked.Append(data.AsSpan(p, Math.Min(n, data.Length - p)));
+        Check(chunked.Finish() == whole, "分块追加改变了签名");
     }
 
     private static void ClipboardAlphaFix()

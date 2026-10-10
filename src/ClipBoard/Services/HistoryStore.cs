@@ -70,6 +70,7 @@ public class HistoryStore
     }
 
     // 统一像素格式后逐块读取全部像素，内存只需一小块缓冲区。
+    // 签名只在内存里和最近一条比较、从不保存，用非加密的 XXH64 即可，比 SHA-256 快数倍。
     private static long ComputeImageSig(BitmapSource img)
     {
         try
@@ -79,17 +80,88 @@ public class HistoryStore
             int stride = checked(img.PixelWidth * 4);
             int rowsPerBlock = Math.Min(img.PixelHeight, Math.Max(1, 65536 / stride));
             var buf = new byte[checked(stride * rowsPerBlock)];
-            using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
-                System.Security.Cryptography.HashAlgorithmName.SHA256);
+            var hash = new XxHash64();
             for (int y = 0; y < img.PixelHeight; y += rowsPerBlock)
             {
                 int rows = Math.Min(rowsPerBlock, img.PixelHeight - y);
                 img.CopyPixels(new Int32Rect(0, y, img.PixelWidth, rows), buf, stride, 0);
-                hash.AppendData(buf, 0, stride * rows);
+                hash.Append(buf.AsSpan(0, stride * rows));
             }
-            return System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(hash.GetHashAndReset());
+            return unchecked((long)hash.Finish());
         }
         catch { return 0; }
+    }
+
+    /// <summary>流式 XXH64（种子 0）：分块追加与一次性计算的结果相同。</summary>
+    internal sealed class XxHash64
+    {
+        private const ulong P1 = 0x9E3779B185EBCA87, P2 = 0xC2B2AE3D27D4EB4F, P3 = 0x165667B19E3779F9,
+            P4 = 0x85EBCA77C2B2AE63, P5 = 0x27D4EB2F165667C5;
+        private ulong _v1 = unchecked(P1 + P2), _v2 = P2, _v3, _v4 = unchecked(0 - P1);
+        private readonly byte[] _tail = new byte[32];
+        private int _tailLength;
+        private ulong _total;
+
+        public void Append(ReadOnlySpan<byte> data)
+        {
+            _total += (ulong)data.Length;
+            if (_tailLength > 0)
+            {
+                int take = Math.Min(32 - _tailLength, data.Length);
+                data[..take].CopyTo(_tail.AsSpan(_tailLength));
+                _tailLength += take;
+                data = data[take..];
+                if (_tailLength < 32) return;
+                Stripes(_tail);
+                _tailLength = 0;
+            }
+            int whole = data.Length & ~31;
+            if (whole > 0) Stripes(data[..whole]);
+            data[whole..].CopyTo(_tail);
+            _tailLength = data.Length - whole;
+        }
+
+        // 每 32 字节为一组，四个 64 位小端字。
+        private void Stripes(ReadOnlySpan<byte> data)
+        {
+            var lanes = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(data);
+            ulong v1 = _v1, v2 = _v2, v3 = _v3, v4 = _v4;
+            for (int i = 0; i + 3 < lanes.Length; i += 4)
+            {
+                v1 = Round(v1, lanes[i]);
+                v2 = Round(v2, lanes[i + 1]);
+                v3 = Round(v3, lanes[i + 2]);
+                v4 = Round(v4, lanes[i + 3]);
+            }
+            _v1 = v1; _v2 = v2; _v3 = v3; _v4 = v4;
+        }
+
+        public ulong Finish()
+        {
+            ulong h;
+            if (_total >= 32)
+            {
+                h = Rotl(_v1, 1) + Rotl(_v2, 7) + Rotl(_v3, 12) + Rotl(_v4, 18);
+                h = Merge(h, _v1); h = Merge(h, _v2); h = Merge(h, _v3); h = Merge(h, _v4);
+            }
+            else h = P5;
+            h += _total;
+            var rest = new ReadOnlySpan<byte>(_tail, 0, _tailLength);
+            for (; rest.Length >= 8; rest = rest[8..])
+                h = Rotl(h ^ Round(0, System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(rest)), 27) * P1 + P4;
+            if (rest.Length >= 4)
+            {
+                h = Rotl(h ^ System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(rest) * P1, 23) * P2 + P3;
+                rest = rest[4..];
+            }
+            foreach (byte b in rest) h = Rotl(h ^ b * P5, 11) * P1;
+            h ^= h >> 33; h *= P2; h ^= h >> 29; h *= P3; h ^= h >> 32;
+            return h;
+        }
+
+        private static ulong Rotl(ulong x, int r) => System.Numerics.BitOperations.RotateLeft(x, r);
+        private static ulong Round(ulong acc, ulong lane) => Rotl(acc + lane * P2, 31) * P1;
+        private static ulong Merge(ulong h, ulong v) => (h ^ Round(0, v)) * P1 + P4;
     }
 
     public static string WriteGifTemp(byte[] gifBytes)
