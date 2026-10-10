@@ -82,6 +82,10 @@ public partial class App : Application
             using (DiagLog.Phase("tray-icon"))
             {
                 _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
+                // Hardcodet 的 IconSource 最终也是读同一个资源流 new 一个 Icon（尺寸按 SM_CXICON 选），
+                // 直接这样设就不必先让 XAML 解出一个从不显示的 BitmapFrame。Icon 构造时已把字节复制走，流可以关。
+                using (var iconStream = GetResourceStream(new Uri("pack://application:,,,/Assets/tray.ico")).Stream)
+                    _trayIcon.Icon = new System.Drawing.Icon(iconStream);
                 EnsureTrayIconVisible();
             }
         }
