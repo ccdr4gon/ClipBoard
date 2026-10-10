@@ -294,11 +294,11 @@
     </DataTemplate>
 
     <v:ClipKindTemplateSelector x:Key="ClipItemTemplateSelector"
-                                Text="{StaticResource ClipTextRowTemplate}"
-                                Image="{StaticResource ClipImageRowTemplate}"
-                                Gif="{StaticResource ClipGifRowTemplate}"
-                                Files="{StaticResource ClipFilesRowTemplate}"
-                                Fallback="{StaticResource ClipItemTemplate}"/>
+                                TextKey="ClipTextRowTemplate"
+                                ImageKey="ClipImageRowTemplate"
+                                GifKey="ClipGifRowTemplate"
+                                FilesKey="ClipFilesRowTemplate"
+                                FallbackKey="ClipItemTemplate"/>
 
     <!-- ── Image tile (ListBoxItem) ── -->
     <Style x:Key="ImageTileStyle" TargetType="{x:Type ListBoxItem}">
