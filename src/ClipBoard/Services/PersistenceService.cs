@@ -291,6 +291,104 @@ public class PersistenceService
 
     public void DeleteGifBlob(string name) => DeleteImageBlob(name);
 
+#if !AVALONIA
+    /// <summary>
+    /// 收藏图片时按字节复制本程序用 WPF 写出的 PNG，代替“整图解码 → PNG 重新编码”（大图约 0.4 秒）。
+    /// 只接受 PngBitmapEncoder 的固定输出；这种文件经 WPF 解码再编码逐字节不变（各种像素格式、DPI、pHYs 1–20000 实测），
+    /// 复制得到的文件与原来的做法完全相同。其他文件（Skia 写的贴纸海报等）返回 null，调用方照原来的路径处理。
+    /// </summary>
+    public string? CopyWpfPngBlob(string name, out int width, out int height)
+    {
+        string? target = null;
+        try
+        {
+            var source = Path.Combine(_blobsDir, name);
+            if (File.Exists(source) && IsWpfPng(source, out width, out height))
+            {
+                var copy = Guid.NewGuid().ToString("N") + ".png";
+                target = Path.Combine(_blobsDir, copy);
+                File.Copy(source, target);
+                return copy;
+            }
+        }
+        catch
+        {
+            if (target != null) try { File.Delete(target); } catch { }
+        }
+        width = height = 0;
+        return null;
+    }
+
+    // PngBitmapEncoder 写出的块固定为：IHDR（8 位 RGB/RGBA、不隔行）、sRGB(0)、gAMA(45455)、pHYs（横纵相同、单位米）、若干 IDAT、IEND，其后没有多余字节。
+    private static bool IsWpfPng(string path, out int width, out int height)
+    {
+        width = height = 0;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1);
+        Span<byte> header = stackalloc byte[8];
+        Span<byte> data = stackalloc byte[13];
+        if (stream.ReadAtLeast(header, 8, throwOnEndOfStream: false) != 8 || !header.SequenceEqual(PngSignature)) return false;
+        int index = 0, idat = 0;
+        while (stream.ReadAtLeast(header, 8, throwOnEndOfStream: false) == 8)
+        {
+            uint length = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(header);
+            var type = header[4..];
+            if (index < 4)
+            {
+                // 前四块依次是 IHDR、sRGB、gAMA、pHYs，长度固定。
+                ReadOnlySpan<byte> expected = index switch { 0 => "IHDR"u8, 1 => "sRGB"u8, 2 => "gAMA"u8, _ => "pHYs"u8 };
+                int size = index switch { 0 => 13, 1 => 1, 2 => 4, _ => 9 };
+                if (!type.SequenceEqual(expected) || length != size) return false;
+                var chunk = data[..size];
+                if (stream.ReadAtLeast(chunk, size, throwOnEndOfStream: false) != size) return false;
+                bool valid = index switch
+                {
+                    0 => chunk[8] == 8 && (chunk[9] == 2 || chunk[9] == 6) && chunk[10] == 0 && chunk[11] == 0 && chunk[12] == 0,
+                    1 => chunk[0] == 0,
+                    2 => System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(chunk) == 45455,
+                    _ => chunk[..4].SequenceEqual(chunk[4..8]) && chunk[8] == 1,
+                };
+                if (!valid) return false;
+                if (index == 0)
+                {
+                    width = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(chunk);
+                    height = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(chunk[4..]);
+                    if (width <= 0 || height <= 0) return false;
+                }
+                index++;
+                stream.Seek(4, SeekOrigin.Current); // CRC
+            }
+            else if (type.SequenceEqual("IDAT"u8))
+            {
+                idat++;
+                stream.Seek(length + 4L, SeekOrigin.Current);
+            }
+            else return type.SequenceEqual("IEND"u8) && length == 0 && idat > 0 && stream.Position + 4 == stream.Length;
+        }
+        return false;
+    }
+
+    private static ReadOnlySpan<byte> PngSignature => [137, 80, 78, 71, 13, 10, 26, 10];
+
+    /// <summary>
+    /// image 是否正是 LoadImageThumbnail(name) 会解码出的缩略图：同一个 blob、同样的解码参数。是的话可以直接共用，结果完全相同。
+    /// 捕获时缩略图失败而保留的原图、拖进来的图片等都不算，照常重新解码。
+    /// </summary>
+    public bool IsThumbnailOf(BitmapSource? image, string name)
+    {
+        if (image is not BitmapImage { IsFrozen: true, CacheOption: BitmapCacheOption.OnLoad, CreateOptions: BitmapCreateOptions.None,
+                Rotation: Rotation.Rotate0, UriSource: { } uri } bitmap || !bitmap.SourceRect.IsEmpty) return false;
+        var full = Path.Combine(_blobsDir, name);
+        if (uri != new Uri(full)) return false;
+        int width, height;
+        try { if (!IsWpfPng(full, out width, out height)) return false; }
+        catch { return false; }
+        // 与 LoadImageThumbnail 按原图尺寸选择解码宽或高的规则一致。
+        int decodeWidth = width >= height && width > ThumbnailMaxSide ? ThumbnailMaxSide : 0;
+        int decodeHeight = height > width && height > ThumbnailMaxSide ? ThumbnailMaxSide : 0;
+        return bitmap.DecodePixelWidth == decodeWidth && bitmap.DecodePixelHeight == decodeHeight;
+    }
+#endif
+
     // HTML 动辄几百 KB，单独存文件，避免每次保存都重写进 data.json。
     public string SaveRichBlob(RichContent rich)
     {

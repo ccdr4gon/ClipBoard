@@ -238,7 +238,12 @@ public class FavoritesStore
         // 之后该历史项被淘汰时再由 HistoryStore 统一清理 blob。
         var back = pinned.Clone();   // Clone 已复制 ImageBlobName/GifBlobName
         back.IsPinned = false;
-        if (back.Kind == ClipKind.Image && !string.IsNullOrEmpty(back.ImageBlobName))
+        if (back.Kind == ClipKind.Image && !string.IsNullOrEmpty(back.ImageBlobName)
+#if !AVALONIA
+            // Clone 带过来的缩略图正是从同一个 blob 按同样参数解码的，就不再解码一遍。
+            && !_persistence.IsThumbnailOf(back.Image, back.ImageBlobName)
+#endif
+            )
             back.Image = _persistence.LoadImageThumbnail(back.ImageBlobName);
         history.InsertExisting(back);
         Save();
@@ -280,24 +285,29 @@ public class FavoritesStore
         clone.Sticker?.ClearPublication();
         if (clone.Kind == ClipKind.Image)
         {
-            // 取源的全分辨率原图，为收藏项保存独立 blob（与历史项解耦：历史被淘汰不影响收藏）。
-            BitmapSource? fullRes = !string.IsNullOrEmpty(src.ImageBlobName)
-                ? _persistence.LoadImageBlob(src.ImageBlobName) : src.Image;
-            if (fullRes != null)
+#if !AVALONIA
+            if (!TryCopyImageBlob(src, clone))
+#endif
             {
-                var toSave = fullRes;
-                clone.ImageBlobName = _persistence.SaveImageBlob(toSave);
+                // 取源的全分辨率原图，为收藏项保存独立 blob（与历史项解耦：历史被淘汰不影响收藏）。
+                BitmapSource? fullRes = !string.IsNullOrEmpty(src.ImageBlobName)
+                    ? _persistence.LoadImageBlob(src.ImageBlobName) : src.Image;
+                if (fullRes != null)
+                {
+                    var toSave = fullRes;
+                    clone.ImageBlobName = _persistence.SaveImageBlob(toSave);
 #if AVALONIA
-                clone.PixelW = toSave.PixelSize.Width;
-                clone.PixelH = toSave.PixelSize.Height;
+                    clone.PixelW = toSave.PixelSize.Width;
+                    clone.PixelH = toSave.PixelSize.Height;
 #else
-                clone.PixelW = toSave.PixelWidth;
-                clone.PixelH = toSave.PixelHeight;
+                    clone.PixelW = toSave.PixelWidth;
+                    clone.PixelH = toSave.PixelHeight;
 #endif
-                clone.Image = _persistence.LoadImageThumbnail(clone.ImageBlobName);
+                    clone.Image = _persistence.LoadImageThumbnail(clone.ImageBlobName);
 #if AVALONIA
-                if (!ReferenceEquals(fullRes, src.Image)) fullRes.Dispose();
+                    if (!ReferenceEquals(fullRes, src.Image)) fullRes.Dispose();
 #endif
+                }
             }
         }
         else if (clone.Kind == ClipKind.Gif)
@@ -315,6 +325,26 @@ public class FavoritesStore
     }
 
 #if !AVALONIA
+    // 源 blob 是本程序用 WPF 写出的 PNG 时，重新编码只会得到逐字节相同的文件：直接复制，省去整图解码和 PNG 编码。
+    // 缩略图与源条目的相同就共用；解码不出缩略图（文件损坏等）时撤销复制，回到原来的路径，结果与以前一致。
+    private bool TryCopyImageBlob(ClipItem src, ClipItem clone)
+    {
+        if (string.IsNullOrEmpty(src.ImageBlobName)) return false;
+        var copied = _persistence.CopyWpfPngBlob(src.ImageBlobName, out int width, out int height);
+        if (copied == null) return false;
+        var thumbnail = _persistence.IsThumbnailOf(src.Image, src.ImageBlobName) ? src.Image : _persistence.LoadImageThumbnail(copied);
+        if (thumbnail == null)
+        {
+            _persistence.DeleteImageBlob(copied);
+            return false;
+        }
+        clone.ImageBlobName = copied;
+        clone.PixelW = width;
+        clone.PixelH = height;
+        clone.Image = thumbnail;
+        return true;
+    }
+
     public static System.Windows.Media.Imaging.BitmapSource Downscale(System.Windows.Media.Imaging.BitmapSource src, int maxSide)
     {
         int w = src.PixelWidth, h = src.PixelHeight;

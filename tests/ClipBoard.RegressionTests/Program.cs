@@ -55,6 +55,7 @@ internal static class Program
             ("截图透明度全为 0 时补成不透明，其余图片原样返回", ClipboardAlphaFix),
             ("图片签名的 XXH64 与标准结果一致且不受分块影响", ImageSigHash),
             ("data.json 和格式文件的字节与旧版一致，旧文件各种编码都能读回", PersistenceFormatUnchanged),
+            ("收藏图片复制原图的结果与重新编码完全相同", FavoriteImageCopiesBlob),
         ];
         int failures = 0;
         foreach (var (name, test) in tests)
@@ -528,6 +529,96 @@ internal static class Program
             File.WriteAllBytes(path, [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(JsonSerializer.Serialize(rich))]);
             Check(f.Persistence.LoadRichBlob(name) == rich, "UTF-16 格式文件读回不一致");
         }
+    }
+
+    private static BitmapSource Pattern(int width, int height, double dpi, int seed)
+    {
+        var pixels = new byte[width * height * 4];
+        new Random(seed).NextBytes(pixels);
+        var bitmap = BitmapSource.Create(width, height, dpi, dpi, PixelFormats.Bgra32, null, pixels, width * 4);
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    private static bool SamePixels(BitmapSource a, BitmapSource b)
+    {
+        if (a.PixelWidth != b.PixelWidth || a.PixelHeight != b.PixelHeight || a.Format != b.Format || a.DpiX != b.DpiX || a.DpiY != b.DpiY) return false;
+        int stride = (a.PixelWidth * a.Format.BitsPerPixel + 7) / 8;
+        var pa = new byte[stride * a.PixelHeight];
+        var pb = new byte[pa.Length];
+        a.CopyPixels(pa, stride, 0);
+        b.CopyPixels(pb, stride, 0);
+        return pa.AsSpan().SequenceEqual(pb);
+    }
+
+    // 只保留 IHDR、IDAT、IEND，模拟 Skia 等其他程序写出的 PNG。
+    private static byte[] StripPngChunks(byte[] png)
+    {
+        var output = new List<byte>(png[..8]);
+        for (int pos = 8; pos < png.Length;)
+        {
+            int length = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(pos));
+            string type = Encoding.ASCII.GetString(png, pos + 4, 4);
+            if (type is "IHDR" or "IDAT" or "IEND") output.AddRange(png[pos..(pos + 12 + length)]);
+            pos += 12 + length;
+        }
+        return [.. output];
+    }
+
+    private static void FavoriteImageCopiesBlob()
+    {
+        using var f = new Fixture();
+        var folder = f.Favorites.CreateFolder("收藏");
+        string OldWay(string blob) => f.Persistence.SaveImageBlob(f.Persistence.LoadImageBlob(blob)!); // 原来的“解码再编码”
+        byte[] Bytes(string blob) => File.ReadAllBytes(f.Persistence.GetBlobPath(blob));
+
+        // WPF 写出的历史图片：得到独立的新文件，与原来的做法逐字节相同；缩略图像素、DPI 相同，并直接共用源条目的缩略图。
+        foreach (var (w, h, dpi) in new[] { (1024, 600, 96.0), (300, 900, 120.0), (200, 100, 144.0) })
+        {
+            f.History.AddImage(Pattern(w, h, dpi, w));
+            var src = f.History.Items[0];
+            f.Favorites.AddToFolder(src, folder);
+            var favorite = folder.Items[0];
+            string expected = OldWay(src.ImageBlobName!);
+            Check(favorite.ImageBlobName != src.ImageBlobName && Bytes(favorite.ImageBlobName!).AsSpan().SequenceEqual(Bytes(expected)), "收藏的图片文件与重新编码的结果不同");
+            Check(favorite.PixelW == w && favorite.PixelH == h, "收藏的原图尺寸不对");
+            Check(SamePixels(favorite.Image!, f.Persistence.LoadImageThumbnail(expected)!) && ReferenceEquals(favorite.Image, src.Image), "收藏缩略图与原来不同或没有共用");
+            f.Persistence.DeleteImageBlob(expected);
+        }
+
+        // 缩略图失败时保留的全分辨率原图不能共用，照常为收藏解码缩略图。
+        var full = Pattern(1024, 600, 96, 7);
+        var fallback = new ClipItem { Kind = ClipKind.Image, ImageBlobName = f.Persistence.SaveImageBlob(full), PixelW = 1024, PixelH = 600, Image = full };
+        f.Favorites.AddToFolder(fallback, folder);
+        Check(folder.Items[0].Image is BitmapImage { PixelWidth: 512 }, "全分辨率原图被当作缩略图共用");
+
+        // 其他程序写出的 PNG（没有 sRGB/gAMA/pHYs）仍按原来的方式重新编码。
+        string stripped = Guid.NewGuid().ToString("N") + ".png";
+        File.WriteAllBytes(f.Persistence.GetBlobPath(stripped), StripPngChunks(Bytes(f.Persistence.SaveImageBlob(Pattern(640, 480, 96, 9)))));
+        var other = new ClipItem { Kind = ClipKind.Image, ImageBlobName = stripped, PixelW = 640, PixelH = 480, Image = f.Persistence.LoadImageThumbnail(stripped) };
+        f.Favorites.AddToFolder(other, folder);
+        string reencoded = OldWay(stripped);
+        Check(Bytes(folder.Items[0].ImageBlobName!).AsSpan().SequenceEqual(Bytes(reencoded)) && !Bytes(reencoded).AsSpan().SequenceEqual(Bytes(stripped)), "非 WPF 写出的 PNG 没有重新编码");
+
+        // 结构完整但数据损坏的文件：结果与原来的做法一致，也不留下多余文件。
+        string corrupt = Guid.NewGuid().ToString("N") + ".png";
+        var bytes = Bytes(f.Persistence.SaveImageBlob(Pattern(300, 300, 96, 11)));
+        int idat = bytes.AsSpan().IndexOf("IDAT"u8);
+        new Random(3).NextBytes(bytes.AsSpan(idat + 4, 64));
+        File.WriteAllBytes(f.Persistence.GetBlobPath(corrupt), bytes);
+        bool decodable = f.Persistence.LoadImageBlob(corrupt) != null;
+        int files = Directory.GetFiles(f.Persistence.BlobsDir).Length;
+        f.Favorites.AddToFolder(new ClipItem { Kind = ClipKind.Image, ImageBlobName = corrupt }, folder);
+        Check(decodable ? folder.Items[0].ImageBlobName != corrupt : folder.Items[0].ImageBlobName == corrupt
+            && Directory.GetFiles(f.Persistence.BlobsDir).Length == files, "损坏的图片收藏结果与以前不同");
+
+        // 取消顶置：缩略图正是从同一 blob 解码的，直接沿用。
+        f.History.AddImage(Pattern(800, 1200, 96, 13));
+        f.Favorites.PinHistory(f.History.Items[0], f.History);
+        var pinnedImage = f.Favorites.PinnedHistory[0].Image;
+        f.Favorites.UnpinHistory(f.Favorites.PinnedHistory[0], f.History);
+        var back = f.History.Items[0];
+        Check(ReferenceEquals(back.Image, pinnedImage) && SamePixels(back.Image!, f.Persistence.LoadImageThumbnail(back.ImageBlobName!)!), "取消顶置后的缩略图与重新解码不同");
     }
 
     private static byte[] ReadHGlobal(System.Windows.DataObject data, string format)
