@@ -269,9 +269,30 @@ public partial class MainWindow : Window
                 BuildTabs();
                 Measure(new Size(Width, Height));
                 Arrange(new Rect(0, 0, Width, Height));
+                _prewarmedHistoryList = _historyTab?.Content as ListBox;
             }
         }
         catch (Exception ex) { DiagLog.Error("panel", "prewarm failed", ex); }
+    }
+
+    // 预热建好、还没显示过的历史列表。隐藏的窗口照样排版，列表一直接着数据的话，首次打开之前的每次复制
+    // （RebuildCombinedHistory 清空再重填）都要在看不见的窗口里把条目行重建一遍，而预热之前首次打开前没有这笔开销。
+    // 所以首次打开前一有复制就先摘掉它的数据源，首次打开在 Show() 之前接回去，首帧前的布局按当时的数据建行
+    // （行模板已经预热过）；中间没有复制时，预热建好的行原样复用。
+    private ListBox? _prewarmedHistoryList;
+
+    private void DetachPrewarmedHistoryList()
+    {
+        if (_prewarmedHistoryList is { ItemsSource: not null } list && !IsVisible) list.ItemsSource = null;
+    }
+
+    private void AttachPrewarmedHistoryList()
+    {
+        if (_prewarmedHistoryList is not { } list) return;
+        _prewarmedHistoryList = null;
+        if (list.ItemsSource != null) return;
+        list.ItemsSource = _combinedHistory;
+        UpdateEntryCount();
     }
 
     private void BuildTabs()
@@ -787,6 +808,7 @@ public partial class MainWindow : Window
 
     private void RebuildCombinedHistory()
     {
+        DetachPrewarmedHistoryList();
         _combinedHistory.Clear();
         foreach (var p in App.Favorites.PinnedHistory) _combinedHistory.Add(p);
         foreach (var i in App.History.Items) _combinedHistory.Add(i);
@@ -931,6 +953,7 @@ public partial class MainWindow : Window
             var myHwnd = new WindowInteropHelper(this).Handle;
             if (!offscreen && prevFg != IntPtr.Zero && prevFg != myHwnd) _foregroundBeforeShow = prevFg;
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+            AttachPrewarmedHistoryList();
             Show();
             probe.Shown = probe.Sw.ElapsedMilliseconds;
             Dispatcher.BeginInvoke(() => { if (probe.LoadedAt < 0) probe.LoadedAt = probe.Sw.ElapsedMilliseconds; },
