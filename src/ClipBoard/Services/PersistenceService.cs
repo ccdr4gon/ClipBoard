@@ -24,8 +24,11 @@ public class PersistenceService
         TypeInfoResolver = PersistedDataJsonContext.Default,
     };
 
-    private System.Threading.Timer? _debounce;
-    private readonly object _lock = new();
+    // 两把锁：_stateLock 只保护待写快照和定时器，UI 线程保存时不用等后台写盘；
+    // _writeLock 让序列化、写临时文件、替换 data.json 一次只做一份。顺序总是先 _writeLock 后 _stateLock。
+    private System.Threading.Timer? _debounce; // 只创建一次，之后用 Change 重新计时
+    private readonly object _stateLock = new();
+    private readonly object _writeLock = new();
     private PersistedData? _pendingSnapshot;
 
     public PersistenceService(string? rootDirectory = null)
@@ -100,11 +103,11 @@ public class PersistenceService
 
     public void SaveDebounced(PersistedData snapshot)
     {
-        lock (_lock)
+        lock (_stateLock)
         {
             _pendingSnapshot = snapshot;
-            _debounce?.Dispose();
-            _debounce = new System.Threading.Timer(_ => WritePending(), null, 500, System.Threading.Timeout.Infinite);
+            _debounce ??= new System.Threading.Timer(_ => WritePending(), null, System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+            _debounce.Change(500, System.Threading.Timeout.Infinite);
         }
     }
 
@@ -115,25 +118,31 @@ public class PersistenceService
 
     private void WritePending()
     {
-        // 取快照和写文件必须共用同一把锁；FlushSync 也要等正在写的快照落盘。
-        lock (_lock)
+        // 先拿写锁再取快照：FlushSync 即使没有待写快照，也要等正在写的那次落盘，退出时不能提前返回。
+        lock (_writeLock)
         {
-            _debounce?.Dispose();
-            _debounce = null;
-            if (_pendingSnapshot is null) return;
+            PersistedData? snapshot;
+            lock (_stateLock)
+            {
+                snapshot = _pendingSnapshot;
+                _pendingSnapshot = null;
+                // 快照已取走，取消还没触发的定时写入（以前是 Dispose）；之后的 SaveDebounced 会重新计时。
+                _debounce?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+            }
+            if (snapshot is null) return;
             try
             {
                 var tmp = _dataFile + ".tmp";
                 // 必须先关闭临时文件再替换，否则 Windows 上替换会因共享冲突失败。
                 using (var stream = CreateJsonFile(tmp))
-                    JsonSerializer.Serialize(stream, _pendingSnapshot, _jsonOpts);
-                if (File.Exists(_dataFile)) File.Replace(tmp, _dataFile, null);
-                else File.Move(tmp, _dataFile);
-                _pendingSnapshot = null;
+                    JsonSerializer.Serialize(stream, snapshot, _jsonOpts);
+                // 同一目录内原子改名并覆盖；File.Replace 还要合并属性、ACL 等，更慢。
+                File.Move(tmp, _dataFile, overwrite: true);
             }
             catch
             {
-                // 保留待保存快照，下一次保存或退出刷新时仍可重试。
+                // 保留待保存快照，下一次保存或退出刷新时仍可重试；写入期间又有更新的快照时以新的为准。
+                lock (_stateLock) _pendingSnapshot ??= snapshot;
             }
         }
     }

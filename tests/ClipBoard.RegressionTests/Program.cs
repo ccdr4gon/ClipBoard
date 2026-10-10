@@ -34,6 +34,7 @@ internal static class Program
             ("原图尺寸在历史、顶置和收藏中保存", ImageDimensionsRoundTrip),
             ("保存失败后可以重新刷新", FailedSaveCanBeRetried),
             ("同步刷新等待正在进行的保存结束", FlushWaitsForWriter),
+            ("后台写盘时保存不阻塞，期间的新快照不丢失", SaveDuringWriteIsKept),
             ("旧数据缺失尺寸时从原图恢复", LegacyImageDimensions),
             ("200 条上限只淘汰历史，不损坏收藏", HistoryLimitPreservesFavorites),
             ("删除顶置图片清理文件", PinnedImageDeletion),
@@ -696,6 +697,29 @@ internal static class Program
         finally { release.Set(); Task.WaitAll(writer, flush); }
         Check(!returnedBeforeWrite, "退出刷新提前返回，后台写入可能在进程退出时中断");
         Check(f.Persistence.Load().History.Single().Text == "最新", "最终快照不正确");
+    }
+
+    private static void SaveDuringWriteIsKept()
+    {
+        using var f = new Fixture();
+        var entered = new ManualResetEventSlim();
+        var release = new ManualResetEventSlim();
+        var options = new JsonSerializerOptions();
+        options.Converters.Add(new BlockingConverter(entered, release));
+        SetField(f.Persistence, "_jsonOpts", options);
+        f.Persistence.SaveDebounced(new PersistedData { History = [new ClipItem { Kind = ClipKind.Text, Text = "旧" }] });
+        var writer = Task.Run(f.Persistence.FlushSync);
+        bool saveReturned;
+        try
+        {
+            Check(entered.Wait(TimeSpan.FromSeconds(5)), "未进入写入阶段");
+            var save = Task.Run(() => f.Persistence.SaveDebounced(new PersistedData { History = [new ClipItem { Kind = ClipKind.Text, Text = "新" }] }));
+            saveReturned = save.Wait(TimeSpan.FromSeconds(2));
+        }
+        finally { release.Set(); writer.Wait(); }
+        Check(saveReturned, "保存被后台写盘阻塞");
+        f.Persistence.FlushSync();
+        Check(f.Persistence.Load().History.Single().Text == "新", "写入期间提交的快照丢失");
     }
 
     private sealed class BlockingConverter(ManualResetEventSlim entered, ManualResetEventSlim release)
