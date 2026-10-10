@@ -30,42 +30,192 @@ public class FavoritesStore
         return f;
     }
 
-    public FavoritesStore(PersistenceService persistence, PersistedData data)
+    public FavoritesStore(PersistenceService persistence, PersistedData data) : this(persistence, data, loadMedia: true) { }
+
+    /// <param name="loadMedia">
+    /// false：只建集合，不载入缩略图 / GIF。调用方已用 <see cref="MediaPreload"/> 在后台解码，
+    /// 并保证在任何界面用到这些条目之前把结果赋回（Windows 启动时让解码与建主窗口重叠进行）。
+    /// </param>
+    public FavoritesStore(PersistenceService persistence, PersistedData data, bool loadMedia)
     {
         _persistence = persistence;
 
+        // 先把媒体全部载好再入集合：与原来逐项「载入 → 加入」的结果一致，此时集合还没有任何订阅者。
+        if (loadMedia) MediaPreload.Start(persistence, data, includeHistory: false).Complete();
+
         foreach (var item in data.PinnedHistory)
-        {
-            RehydrateImage(item);
             PinnedHistory.Add(item);
-        }
 
         foreach (var f in data.Folders.OrderBy(f => f.Order))
             Folders.Add(f);
 
         foreach (var fav in data.Favorites)
         {
-            RehydrateImage(fav);
             var folder = Folders.FirstOrDefault(f => f.Id == fav.FolderId);
             folder?.Items.Add(fav);
         }
     }
 
-    private void RehydrateImage(ClipItem item)
+    /// <summary>
+    /// 启动时批量载入条目的缩略图与 GIF 字节。每张图的解码彼此独立、不共享状态，
+    /// 所以交给几个后台线程并行做；<see cref="Complete"/> 在调用线程上按原顺序把结果赋回条目，
+    /// GIF 首帧（GifSource）也仍在调用线程上解码。载入规则与原来逐项载入时完全相同：
+    /// 顶置 / 收藏——贴纸有海报只载海报缩略图，否则图片载缩略图，GIF 载字节并解首帧；
+    /// 历史——图片载缩略图，GIF 只载字节。
+    /// </summary>
+    public sealed class MediaPreload
     {
-        if (item.Sticker != null && !string.IsNullOrEmpty(item.ImageBlobName))
+        private sealed class Job(ClipItem item, string? thumb, string? gif, bool firstFrame)
         {
-            item.Image = _persistence.LoadImageThumbnail(item.ImageBlobName);
-            return;
+            public readonly ClipItem Item = item;
+            public readonly string? Thumb = thumb;
+            public readonly string? Gif = gif;
+            public readonly bool FirstFrame = firstFrame;
+            public BitmapSource? Image;
+            public byte[]? Bytes;
+            public bool Loaded;
         }
-        if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
+
+        // 每个线程同一时刻要握着一整张原图的解码缓冲（4K 截图约 33 MB），所以线程数封顶。
+        private static readonly int MaxWorkers = Math.Clamp(Environment.ProcessorCount - 1, 1, 4);
+
+        private readonly PersistenceService _persistence;
+        private readonly List<Job> _jobs = new();   // 赋回顺序：顶置 → 收藏 → 历史
+        private Job[] _queue = [];                  // 解码顺序：历史大图在前，最后剩下的都是小图
+        private int _next = -1;
+        private int _running;
+        private int _workers;
+        private int _stolen;
+        private long _decodeMs = -1;
+        private readonly System.Diagnostics.Stopwatch _clock = new();
+        private readonly ManualResetEvent _workersDone = new(true);
+
+        private MediaPreload(PersistenceService persistence) { _persistence = persistence; }
+
+        /// <summary>历史里要载入的图片 / GIF 数（启动日志用）。</summary>
+        public int HistoryImages { get; private set; }
+        public int HistoryGifs { get; private set; }
+
+        /// <summary>一行统计，写进启动日志。</summary>
+        public string Summary => $"jobs={_jobs.Count} threads={_workers} doneByCaller={_stolen} decode={_decodeMs}ms";
+
+        /// <summary>挑出要载入的条目并立即开始后台解码。可在任意线程调用；条目在 <see cref="Complete"/> 之前不会被改动。</summary>
+        public static MediaPreload Start(PersistenceService persistence, PersistedData data, bool includeHistory)
         {
-            item.Image = _persistence.LoadImageThumbnail(item.ImageBlobName); // 只载入缩略图
+            var preload = new MediaPreload(persistence);
+            foreach (var item in data.PinnedHistory.Concat(data.Favorites))
+            {
+                if (item.Sticker != null && !string.IsNullOrEmpty(item.ImageBlobName))
+                    preload._jobs.Add(new Job(item, item.ImageBlobName, null, false));
+                else if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
+                    preload._jobs.Add(new Job(item, item.ImageBlobName, null, false)); // 只载入缩略图
+                else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
+                    preload._jobs.Add(new Job(item, null, item.GifBlobName, true));
+            }
+            int favoriteJobs = preload._jobs.Count;
+            if (includeHistory)
+            {
+                foreach (var item in data.History)
+                {
+                    if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
+                    {
+                        preload._jobs.Add(new Job(item, item.ImageBlobName, null, false)); // 只载入缩略图，避免启动时把上百张大图全分辨率读进内存
+                        preload.HistoryImages++;
+                    }
+                    else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
+                    {
+                        preload._jobs.Add(new Job(item, null, item.GifBlobName, false));
+                        preload.HistoryGifs++;
+                    }
+                }
+            }
+            preload._queue = [.. preload._jobs.Skip(favoriteJobs), .. preload._jobs.Take(favoriteJobs)];
+            preload.StartWorkers();
+            return preload;
         }
-        else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
+
+        private void StartWorkers()
         {
-            item.GifBytes = _persistence.LoadGifBlob(item.GifBlobName);
-            try { item.Image = item.GifSource; } catch { }
+            _clock.Start();
+            if (_queue.Length < 2) return; // 不值得开线程，Complete 在调用线程上载
+            _workers = Math.Min(MaxWorkers, _queue.Length);
+            _running = _workers;
+            _workersDone.Reset();
+            for (int i = 0; i < _workers; i++)
+            {
+                try
+                {
+                    var thread = new Thread(Work) { IsBackground = true, Name = "startup-media" };
+#if !AVALONIA
+                    thread.SetApartmentState(ApartmentState.STA);
+#endif
+                    thread.Start();
+                }
+                catch
+                {
+                    WorkerExited(); // 线程开不起来：剩下的活由 Complete 在调用线程上做
+                }
+            }
+        }
+
+        private void Work()
+        {
+            try
+            {
+                for (int i; (i = Interlocked.Increment(ref _next)) < _queue.Length;) Load(_queue[i]);
+            }
+            finally
+            {
+                WorkerExited();
+#if !AVALONIA
+                // 建过 BitmapImage 的线程会有自己的 Dispatcher 和一个隐藏消息窗口；结果都已冻结，用完就关掉。
+                try { System.Windows.Threading.Dispatcher.FromThread(Thread.CurrentThread)?.InvokeShutdown(); } catch { }
+#endif
+            }
+        }
+
+        private void WorkerExited()
+        {
+            if (Interlocked.Decrement(ref _running) != 0) return;
+            _decodeMs = _clock.ElapsedMilliseconds;
+            _workersDone.Set();
+        }
+
+        private void Load(Job job)
+        {
+            try
+            {
+                // 两个方法都自带兜底，失败返回 null；结果已冻结，可以交给别的线程。
+                if (job.Thumb != null) job.Image = _persistence.LoadImageThumbnail(job.Thumb);
+                else job.Bytes = _persistence.LoadGifBlob(job.Gif!);
+                job.Loaded = true;
+            }
+            catch { } // 万一抛出，Complete 会在调用线程上再载一次
+        }
+
+        /// <summary>
+        /// 在调用线程上：把还没被后台线程领走的条目自己载完，等后台线程收尾，再按原顺序赋回。
+        /// <paramref name="wait"/> 决定怎么等（Windows 的 UI 线程要用不泵消息的等待）。只能调用一次。
+        /// </summary>
+        public void Complete(Action<WaitHandle>? wait = null)
+        {
+            for (int i; (i = Interlocked.Increment(ref _next)) < _queue.Length; _stolen++) Load(_queue[i]);
+            if (wait != null) wait(_workersDone); else _workersDone.WaitOne();
+            if (_decodeMs < 0) _decodeMs = _clock.ElapsedMilliseconds;
+            foreach (var job in _jobs)
+            {
+                if (!job.Loaded) Load(job);
+                if (job.Thumb != null)
+                {
+                    job.Item.Image = job.Image;
+                }
+                else
+                {
+                    job.Item.GifBytes = job.Bytes;
+                    if (job.FirstFrame) { try { job.Item.Image = job.Item.GifSource; } catch { } }
+                }
+            }
+            _workersDone.Dispose();
         }
     }
 

@@ -100,30 +100,20 @@ public partial class App : Application
             DiagLog.Write("startup", $"loaded history={persisted.History.Count} folders={persisted.Favorites?.Count ?? 0}");
         }
 
+        // 缩略图解码（顶置、收藏、历史）立即在后台线程并行开始，与下面建集合、托盘和主窗口重叠进行；
+        // 结果在 thumbs-join 按原顺序赋回，那时 OnStartup 还没返回，任何界面和第一帧都还没用到这些条目。
+        var media = FavoritesStore.MediaPreload.Start(Persistence, persisted, includeHistory: true);
+
         Settings = persisted.Settings;
-        Favorites = new FavoritesStore(Persistence, persisted);
+        Favorites = new FavoritesStore(Persistence, persisted, loadMedia: false);
         History = new HistoryStore(Favorites);
         History.SetPersistence(Persistence);
         Favorites.SetHistoryStore(History);
 
         using (DiagLog.Phase("blob-load"))
         {
-            int images = 0, gifs = 0;
             foreach (var item in persisted.History)
-            {
-                if (item.Kind == ClipKind.Image && !string.IsNullOrEmpty(item.ImageBlobName))
-                {
-                    item.Image = Persistence.LoadImageThumbnail(item.ImageBlobName); // 只载入缩略图，避免启动时把上百张大图全分辨率读进内存
-                    images++;
-                }
-                else if (item.Kind == ClipKind.Gif && !string.IsNullOrEmpty(item.GifBlobName))
-                {
-                    item.GifBytes = Persistence.LoadGifBlob(item.GifBlobName);
-                    gifs++;
-                }
                 History.Items.Add(item);
-            }
-            DiagLog.Write("startup", $"blobs decoded: images={images} gifs={gifs}");
         }
 
         Settings.PropertyChanged += (_, args) =>
@@ -153,6 +143,12 @@ public partial class App : Application
             var hwnd = new System.Windows.Interop.WindowInteropHelper(_mainWindow).EnsureHandle();
             _mainWindow.Hide();
             DiagLog.Write("startup", $"MainWindow hwnd={hwnd:X}");
+        }
+
+        using (DiagLog.Phase("thumbs-join"))
+        {
+            media.Complete(WaitWithoutPumping);
+            DiagLog.Write("startup", $"blobs decoded: images={media.HistoryImages} gifs={media.HistoryGifs} | {media.Summary}");
         }
 
         if (BenchMode.Enabled)
@@ -442,6 +438,20 @@ public partial class App : Application
     }
     [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern bool Shell_NotifyIconW(uint message, ref NotifyIconDataW data);
+
+    // UI 线程是 STA：普通的 Wait 在等待期间会派发别的线程 / 进程发来的消息，让托盘和窗口钩子在 OnStartup
+    // 半途中被重入。启动阶段的等待因此直接走内核等待，不泵消息——和原来全在 UI 线程上顺序执行时一样。
+    // 万一 15 秒还没等到（理论上只有某个解码器要回调 UI 线程才会如此），退回普通等待，宁可重入也不能卡死启动。
+    private static void WaitWithoutPumping(WaitHandle handle)
+    {
+        if (WaitForSingleObject(handle.SafeWaitHandle, 15000) == WaitObject0) return;
+        DiagLog.Write("startup", "non-pumping wait timed out after 15s, falling back to a pumping wait");
+        handle.WaitOne();
+    }
+
+    private const uint WaitObject0 = 0;
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint WaitForSingleObject(Microsoft.Win32.SafeHandles.SafeWaitHandle handle, uint milliseconds);
 
     private static void LogCrash(string source, Exception ex)
     {
