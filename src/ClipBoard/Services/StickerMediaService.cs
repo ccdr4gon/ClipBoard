@@ -72,13 +72,15 @@ public sealed class StickerMediaService(PersistenceService persistence, string t
             catch { File.Delete(persistence.GetBlobPath(original)); throw; }
         }, ct);
 
-    public async Task<ClipItem> ImportBytesAsync(byte[] bytes, StickerFormat expected, CancellationToken ct)
-    {
-        using var work = new WorkDirectory(persistence.RootDirectory);
-        var path = Path.Combine(work.Path, "download" + Extension(expected));
-        await File.WriteAllBytesAsync(path, bytes, ct);
-        return await ImportFileAsync(path, ct);
-    }
+    // 临时目录的创建、写入和删除放在后台线程，不占用调用方（UI）线程；流程和结果不变。
+    public Task<ClipItem> ImportBytesAsync(byte[] bytes, StickerFormat expected, CancellationToken ct)
+        => Task.Run(async () =>
+        {
+            using var work = new WorkDirectory(persistence.RootDirectory);
+            var path = Path.Combine(work.Path, "download" + Extension(expected));
+            await File.WriteAllBytesAsync(path, bytes, ct);
+            return await ImportFileAsync(path, ct);
+        }, ct);
 
     public async Task EnsureAssetAsync(ClipItem item, CancellationToken ct)
     {

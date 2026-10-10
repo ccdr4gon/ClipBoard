@@ -23,7 +23,7 @@ public sealed class StickerLibraryService(FavoritesStore favorites, PersistenceS
                 var item = await media.ImportFileAsync(file, ct);
                 item.FolderId = folder.Id;
                 folder.Items.Add(item);
-                Save();
+                await SaveImportAsync();
                 added++;
             }
             catch (OperationCanceledException) { throw; }
@@ -43,33 +43,63 @@ public sealed class StickerLibraryService(FavoritesStore favorites, PersistenceS
             folder.Telegram = new TelegramPackBinding { SourceSetName = remote.Name };
         }
         folderReady?.Invoke(folder);
-        int added = 0, skipped = 0, index = 0;
+        int added = 0, skipped = 0;
         var errors = new List<string>();
-        foreach (var sticker in selection)
+        var stickers = selection.ToArray();
+        bool Present(TelegramSticker s) => folder.Items.Any(i => i.Sticker?.SourceSetName == remote.Name && i.Sticker.SourceUniqueId == s.FileUniqueId);
+        // 下载与处理重叠：处理第 k 张时提前下载后面两张（同时最多 3 个请求，导入窗口取缩略图已用 4 个）。
+        // 仍严格按顺序处理、跳过、保存和记录错误；是否已存在在处理到那一张时才最终判断，和以前一样。
+        const int MaxInFlight = 3;
+        var downloads = new Task<byte[]>?[stickers.Length];
+        var discarded = new List<Task<byte[]>>();
+        using var prefetch = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            index++;
-            if (folder.Items.Any(i => i.Sticker?.SourceSetName == remote.Name && i.Sticker.SourceUniqueId == sticker.FileUniqueId))
-            { skipped++; continue; }
-            progress?.Report($"导入 {remote.Title}：第 {index} 张…");
-            try
+            for (int k = 0; k < stickers.Length; k++)
             {
-                var bytes = await client.DownloadAsync(sticker.FileId, ct);
-                var item = await media.ImportBytesAsync(bytes, sticker.Format, ct);
-                item.FolderId = folder.Id;
-                item.Title = $"{remote.Title} {Array.IndexOf(remote.Stickers, sticker) + 1}";
-                item.Sticker!.SourceSetName = remote.Name;
-                item.Sticker.SourceFileId = sticker.FileId;
-                item.Sticker.SourceUniqueId = sticker.FileUniqueId;
-                item.Sticker.Emojis = ParseEmojis(sticker.Emoji ?? "🙂");
-                folder.Items.Add(item);
-                Save();
-                added++;
+                ct.ThrowIfCancellationRequested();
+                int index = k + 1;
+                var sticker = stickers[k];
+                if (Present(sticker))
+                {
+                    skipped++;
+                    if (downloads[k] is { } unused) discarded.Add(unused);
+                    downloads[k] = null;
+                    continue;
+                }
+                for (int ahead = k; ahead < stickers.Length && ahead < k + MaxInFlight; ahead++)
+                    if (downloads[ahead] == null && (ahead == k || !Present(stickers[ahead])))
+                        downloads[ahead] = client.DownloadAsync(stickers[ahead].FileId, prefetch.Token);
+                progress?.Report($"导入 {remote.Title}：第 {index} 张…");
+                var download = downloads[k]!;
+                downloads[k] = null;
+                try
+                {
+                    var bytes = await download;
+                    var item = await media.ImportBytesAsync(bytes, sticker.Format, ct);
+                    item.FolderId = folder.Id;
+                    item.Title = $"{remote.Title} {Array.IndexOf(remote.Stickers, sticker) + 1}";
+                    item.Sticker!.SourceSetName = remote.Name;
+                    item.Sticker.SourceFileId = sticker.FileId;
+                    item.Sticker.SourceUniqueId = sticker.FileUniqueId;
+                    item.Sticker.Emojis = ParseEmojis(sticker.Emoji ?? "🙂");
+                    folder.Items.Add(item);
+                    await SaveImportAsync();
+                    added++;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { errors.Add($"第 {index} 张：{ex.Message}"); }
             }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { errors.Add($"第 {index} 张：{ex.Message}"); }
         }
-        Save();
+        finally
+        {
+            // 调用方返回后马上释放 HttpClient，未取走的预取不能留在后台：先取消，再等它们结束并吞掉异常，
+            // 否则会变成未观察的任务异常（Windows 版会记成崩溃日志）。
+            prefetch.Cancel();
+            var outstanding = downloads.OfType<Task<byte[]>>().Concat(discarded).ToArray();
+            if (outstanding.Length > 0) { try { await Task.WhenAll(outstanding); } catch { } }
+        }
+        await SaveImportAsync();
         return new(folder, added, skipped, errors);
     }
 
@@ -139,4 +169,12 @@ public sealed class StickerLibraryService(FavoritesStore favorites, PersistenceS
     }
 
     public void Save() { favorites.Save(); persistence.FlushSync(); }
+
+    // 导入每加一张就落盘一次，与 Save 一样可靠；快照仍在 UI 线程上从界面集合生成，只把序列化和写文件放到后台线程，
+    // 写完才继续下一张。不传取消令牌：已经加进收藏夹的条目必须写进 data.json。
+    private async Task SaveImportAsync()
+    {
+        favorites.Save();
+        await Task.Run(persistence.FlushSync);
+    }
 }

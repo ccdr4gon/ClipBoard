@@ -44,6 +44,7 @@ internal static class Program
             ("超长 GIF 要求明确截取", LongAnimation),
             ("TGS 原样输出与修改后动画转换", VectorMedia),
             ("混合贴纸包导入及重复导入保留本地修改", ImportPack),
+            ("Telegram 导入提前下载，但按顺序处理、跳过和报错", ImportPipeline),
             ("创建包归属用户并只替换修改项", PublishAndReplace),
             ("替换成功但响应丢失后重试不重复添加", RetryReplace),
             ("创建成功但响应丢失后重试不重复建包", RetryCreate),
@@ -170,6 +171,35 @@ internal static class Program
         var again = await f.Library.ImportTelegramAsync(client, remote, remote.Stickers, null, default);
         Check(again.Added == 0 && again.Skipped == 2 && first.Folder.Items[0].Sticker!.Revision == 2, "重复导入覆盖了本地修改");
     }
+    private static async Task ImportPipeline()
+    {
+        using var f = new Fixture(); using var server = new FakeTelegram(); using var slow = new SlowNetwork(server); using var http = new HttpClient(slow);
+        using var client = new TelegramStickerClient(FakeTelegram.Token, http);
+        var files = Enumerable.Range(1, 6).Select(i => (File.ReadAllBytes(Png(f.Root, i)), "static")).ToList();
+        files.Insert(2, ([1, 2, 3], "static")); // 第 3 张无法识别
+        server.Seed("PipelinePack", [.. files]);
+        var remote = await client.GetSetAsync("PipelinePack", default);
+        var result = await f.Library.ImportTelegramAsync(client, remote, [.. remote.Stickers, remote.Stickers[0]], null, default);
+        Check(result.Added == 6 && result.Skipped == 1 && result.Errors.Count == 1 && result.Errors[0].StartsWith("第 3 张："), "导入结果不对：" + string.Join(";", result.Errors));
+        Check(result.Folder.Items.Select(i => i.Title).SequenceEqual(new[] { 1, 2, 4, 5, 6, 7 }.Select(n => $"{remote.Title} {n}")), "导入顺序改变");
+        Check(slow.Peak is > 1 and <= 3, $"同时进行的请求数不对：{slow.Peak}");
+        var reloaded = new FavoritesStore(f.Persistence, f.Persistence.Load());
+        Check(reloaded.Folders.Single(x => x.Id == result.Folder.Id).Items.Count == 6, "导入的贴纸没有全部落盘");
+    }
+
+    // 给每个请求加一点延迟并记录同时进行的请求数，用来确认下载与处理确实重叠。
+    private sealed class SlowNetwork(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        private int _active;
+        public int Peak;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Peak = Math.Max(Peak, Interlocked.Increment(ref _active));
+            try { await Task.Delay(40, ct); return await base.SendAsync(request, ct); }
+            finally { Interlocked.Decrement(ref _active); }
+        }
+    }
+
     private static async Task PublishAndReplace()
     {
         using var f = new Fixture(); using var server = new FakeTelegram(); using var http = new HttpClient(server); using var client = new TelegramStickerClient(FakeTelegram.Token, http);
