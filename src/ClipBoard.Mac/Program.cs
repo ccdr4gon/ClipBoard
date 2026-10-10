@@ -1,4 +1,5 @@
 using Avalonia;
+using ClipBoard.Services;
 
 namespace ClipBoard;
 
@@ -24,7 +25,13 @@ internal static class Program
         FileStream instance;
         try { instance = new FileStream(Path.Combine(root, "app.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException) { Console.Error.WriteLine("ClipBoard 已在运行，请从菜单栏打开。"); return 1; }
-        using (instance) BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        using (instance)
+        {
+            // 拿到单实例锁后就开始读取数据（JSON 首次反序列化较慢），与 Avalonia 初始化并行；路径与原先 new(ProfileDirectory) 相同。
+            var profile = App.ProfileDirectory;
+            App.PreloadedData = Task.Run(() => { var persistence = new PersistenceService(profile); return (persistence, persistence.Load()); });
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        }
         return 0;
     }
     public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>().UsePlatformDetect()

@@ -16,6 +16,8 @@ public partial class App : Application
     public static FavoritesStore Favorites { get; private set; } = null!;
     public static HistoryStore History { get; private set; } = null!;
     public static AppSettings Settings { get; private set; } = new();
+    /// <summary>Program.Main 在 Avalonia 平台初始化、加载主题的同时于后台读取 data.json。</summary>
+    internal static Task<(PersistenceService Service, Models.PersistedData Data)>? PreloadedData { get; set; }
     private MacHotkey? _hotkey;
     private DispatcherTimer? _poll;
     private TrayIcon? _tray;
@@ -29,8 +31,9 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
-            Persistence = new(ProfileDirectory);
-            var data = Persistence.Load();
+            Models.PersistedData data;
+            if (PreloadedData is { } preload) { (Persistence, data) = preload.GetAwaiter().GetResult(); PreloadedData = null; }
+            else { Persistence = new(ProfileDirectory); data = Persistence.Load(); } // 测试等不经过 Program.Main 的宿主
             Settings = data.Settings;
             Favorites = new(Persistence, data);
             History = new(Favorites);
