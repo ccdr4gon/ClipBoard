@@ -66,12 +66,23 @@ public static class DiagLog
         try
         {
             Write("boot", $"cmdline={Environment.CommandLine}");
-            Write("boot", $"user={Environment.UserName} winSession={Process.GetCurrentProcess().SessionId} " +
+            Write("boot", $"user={Environment.UserName} winSession={WinSessionId()} " +
                           $"os={Environment.OSVersion.Version} clr={Environment.Version} " +
                           $"utcOffset={TimeZoneInfo.Local.GetUtcOffset(DateTime.Now)}");
         }
         catch { }
     }
+
+    // Process.SessionId 每次都要给全系统所有进程和线程拍一次快照（本机约 15 ms，开机高峰更久）；
+    // ProcessIdToSessionId 只查本进程，值相同。失败时退回原来的写法。
+    private static string WinSessionId()
+        => ProcessIdToSessionId((uint)Environment.ProcessId, out uint sessionId) ? sessionId.ToString() : ProcessSessionId();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static string ProcessSessionId() => Process.GetCurrentProcess().SessionId.ToString();
+
+    [DllImport("kernel32.dll")]
+    private static extern bool ProcessIdToSessionId(uint processId, out uint sessionId);
 
     /// <summary>写一行日志。category 用于分类（boot/startup/tray/hotkey/autostart/exit...）。</summary>
     public static void Write(string category, string message)
@@ -174,6 +185,11 @@ public static class DiagLog
     private static extern int NtQueryInformationProcess(
         IntPtr processHandle, int infoClass, ref ProcessBasicInformation info, int infoLength, out int returnLength);
 
+    private const int ProcessQueryLimitedInformation = 0x1000;
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] private static extern IntPtr OpenProcess(int access, bool inheritHandle, int processId);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+
     /// <summary>
     /// 解析父进程。pid 会被系统回收复用，所以额外校验父进程的启动时间必须早于本进程，
     /// 否则只报 &lt;recycled&gt; 而不是给出一个自信但错误的名字。
@@ -182,29 +198,41 @@ public static class DiagLog
     {
         try
         {
-            var self = Process.GetCurrentProcess();
             var pbi = new ProcessBasicInformation();
-            if (NtQueryInformationProcess(self.Handle, 0, ref pbi, Marshal.SizeOf(pbi), out _) != 0)
+            if (NtQueryInformationProcess(GetCurrentProcess(), 0, ref pbi, Marshal.SizeOf(pbi), out _) != 0)
                 return "<query-failed>";
 
             int parentPid = pbi.InheritedFromUniqueProcessId.ToInt32();
             if (parentPid <= 0) return "<none>";
 
-            try
-            {
-                var parent = Process.GetProcessById(parentPid);
-                // 父进程比自己还晚启动 => pid 已被复用，拿到的是别的进程
-                if (parent.StartTime > self.StartTime) return $"<recycled>({parentPid})";
-                return $"{parent.ProcessName}.exe({parentPid})";
-            }
-            catch
-            {
-                return $"<exited>({parentPid})"; // 父进程已退出（例如 explorer 拉起后立刻不再持有）
-            }
+            // 读父进程启动时间要的就是这个权限：打不开（已退出，或是以 SYSTEM 运行的任务计划服务、拒绝访问）时，
+            // 下面的 Process 写法也必然落到 <exited>。直接返回，省掉枚举全部进程和一次首次异常——
+            // 每 15 分钟一次的保活进程和登录启动都走这条路。
+            IntPtr parentHandle = OpenProcess(ProcessQueryLimitedInformation, false, parentPid);
+            if (parentHandle == IntPtr.Zero) return $"<exited>({parentPid})";
+            CloseHandle(parentHandle);
+            return DescribeOpenableParent(parentPid);
         }
         catch
         {
             return "<error>";
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)] // 只有走到这里才加载 System.Diagnostics.Process
+    private static string DescribeOpenableParent(int parentPid)
+    {
+        try
+        {
+            var self = Process.GetCurrentProcess();
+            var parent = Process.GetProcessById(parentPid);
+            // 父进程比自己还晚启动 => pid 已被复用，拿到的是别的进程
+            if (parent.StartTime > self.StartTime) return $"<recycled>({parentPid})";
+            return $"{parent.ProcessName}.exe({parentPid})";
+        }
+        catch
+        {
+            return $"<exited>({parentPid})"; // 父进程已退出（例如 explorer 拉起后立刻不再持有）
         }
     }
 }
