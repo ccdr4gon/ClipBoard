@@ -55,6 +55,7 @@ internal static class Program
             ("原有导出入口也包含 GIF 和 TGS", ExistingExporter),
             ("取消媒体转换后原件仍可用", CancelMedia),
             ("原面板贴纸标签与启动前新增标签不重复", RenderOriginalPanel),
+            ("搜索框有焦点时方向键切换选中项", ArrowKeysFromSearchBox),
             ("历史直接显示缩略图且只裁切长图上下区域", RenderHistoryPreview),
         ];
         int failures = 0;
@@ -326,6 +327,51 @@ internal static class Program
         string output = Path.Combine(Repo, "out", "sticker-tabs-preview.png"); Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image)); using (var stream = File.Create(output)) encoder.Save(stream);
         window.Close(); Console.WriteLine("UI preview: " + output);
+    }
+
+    // 按热键打开时焦点在搜索框里：单行 TextBox 会吞掉 ↑/↓，窗口要在隧道阶段先接住。
+    // 不显示窗口、不抢焦点：只建窗口句柄，直接在搜索框上触发按键事件。
+    private static Task ArrowKeysFromSearchBox()
+    {
+        using var f = new Fixture();
+        for (int i = 1; i <= 4; i++) f.History.AddText("条目 " + i);
+        typeof(ClipBoard.App).GetProperty(nameof(ClipBoard.App.Favorites))!.SetValue(null, f.Favorites);
+        typeof(ClipBoard.App).GetProperty(nameof(ClipBoard.App.Persistence))!.SetValue(null, f.Persistence);
+        typeof(ClipBoard.App).GetProperty(nameof(ClipBoard.App.History))!.SetValue(null, f.History);
+        Application.Current.Resources.MergedDictionaries.Add(new ResourceDictionary
+        { Source = new Uri("pack://application:,,,/ClipBoard;component/Views/HistoryItemTemplate.xaml") });
+        var window = new ClipBoard.MainWindow();
+        new System.Windows.Interop.WindowInteropHelper(window).EnsureHandle();
+        window.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
+        var search = (System.Windows.Controls.TextBox)window.FindName("SearchBox");
+        var tabs = (System.Windows.Controls.TabControl)window.FindName("Tabs");
+        var list = (System.Windows.Controls.ListBox)((System.Windows.Controls.TabItem)tabs.SelectedItem).Content;
+        list.SelectedIndex = 0;
+        // 没显示过的窗口没有 PresentationSource；按键事件只需要一个输入源引用，用一个不可见的空窗口代替。
+        using var input = new System.Windows.Interop.HwndSource(new System.Windows.Interop.HwndSourceParameters("ClipBoard.StickerTests.Keys") { WindowStyle = 0 });
+        bool Press(DependencyObject target, System.Windows.Input.Key key)
+        {
+            var e = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, input, 0, key)
+            { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent };
+            ((UIElement)target).RaiseEvent(e);
+            if (!e.Handled) { e.RoutedEvent = System.Windows.Input.Keyboard.KeyDownEvent; ((UIElement)target).RaiseEvent(e); }
+            return e.Handled;
+        }
+        Press(search, System.Windows.Input.Key.Down);
+        Check(list.SelectedIndex == 1, "搜索框有焦点时 ↓ 没有选中下一条");
+        Press(search, System.Windows.Input.Key.Down); Press(search, System.Windows.Input.Key.Up);
+        Check(list.SelectedIndex == 1, "搜索框有焦点时 ↑ 没有选中上一条");
+        for (int i = 0; i < 6; i++) Press(search, System.Windows.Input.Key.Down);
+        Check(list.SelectedIndex == list.Items.Count - 1, "↓ 越过了最后一条");
+        for (int i = 0; i < 6; i++) Press(search, System.Windows.Input.Key.Up);
+        Check(list.SelectedIndex == 0, "↑ 越过了第一条");
+        // 焦点不在搜索框（例如列表自己）时不在隧道阶段截走，交给列表原有的方向键处理。
+        var preview = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, input, 0, System.Windows.Input.Key.Down)
+        { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent };
+        list.RaiseEvent(preview);
+        Check(!preview.Handled && list.SelectedIndex == 0, "列表自己的方向键被窗口提前截走");
+        window.Close();
+        return Task.CompletedTask;
     }
 
     private static async Task<int> HistoryPreviewOnly()

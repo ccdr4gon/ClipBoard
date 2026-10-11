@@ -63,6 +63,7 @@ public partial class MainWindow : Window
         if (!BenchMode.Enabled)
             Dispatcher.BeginInvoke(new Action(Prewarm), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         SourceInitialized += OnSourceInitialized;
+        PreviewKeyDown += OnPreviewKeyDown;
         Closed += (_, _) => _stickerActions?.Cancel();
         Activated += (_, _) =>
         {
@@ -1379,18 +1380,35 @@ public partial class MainWindow : Window
         }
     }
 
+    // 搜索框（单行 TextBox）自己会把 ↑/↓ 标记为已处理，冒泡的 KeyDown 永远到不了窗口；
+    // 而按热键打开面板时焦点总在搜索框里，所以要在隧道阶段先接住。只管搜索框：
+    // 列表有焦点时它自己处理方向键，右键菜单等弹出层也要保留自己的方向键导航。
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // 键盘事件的 OriginalSource 就是有焦点的元素，所以这等于「焦点在搜索框里」。
+        if (e.Key is Key.Down or Key.Up && Keyboard.Modifiers == ModifierKeys.None
+            && e.OriginalSource is DependencyObject source && (source == SearchBox || SearchBox.IsAncestorOf(source))
+            && MoveSelection(e.Key == Key.Down))
+            e.Handled = true;
+    }
+
+    private bool MoveSelection(bool down)
+    {
+        var lb = GetActiveListBox();
+        if (lb == null || lb.Items.Count == 0) return false;
+        int idx = lb.SelectedIndex;
+        idx = down ? Math.Min(idx + 1, lb.Items.Count - 1) : Math.Max(idx - 1, 0);
+        lb.SelectedIndex = Math.Max(0, idx);
+        (lb.ItemContainerGenerator.ContainerFromIndex(lb.SelectedIndex) as ListBoxItem)?.BringIntoView();
+        return true;
+    }
+
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape) { HidePanel(); e.Handled = true; }
         else if (e.Key == Key.Down || e.Key == Key.Up)
         {
-            var lb = GetActiveListBox();
-            if (lb == null || lb.Items.Count == 0) return;
-            int idx = lb.SelectedIndex;
-            idx = e.Key == Key.Down ? Math.Min(idx + 1, lb.Items.Count - 1) : Math.Max(idx - 1, 0);
-            lb.SelectedIndex = Math.Max(0, idx);
-            (lb.ItemContainerGenerator.ContainerFromIndex(lb.SelectedIndex) as ListBoxItem)?.BringIntoView();
-            e.Handled = true;
+            if (MoveSelection(e.Key == Key.Down)) e.Handled = true;
         }
         else if (e.Key == Key.Enter)
         {
