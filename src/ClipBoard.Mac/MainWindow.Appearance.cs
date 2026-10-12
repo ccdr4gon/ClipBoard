@@ -17,6 +17,7 @@ public sealed partial class MainWindow
     private readonly StackPanel _tabs = new() { Orientation = Orientation.Horizontal, Spacing = 24 };
     private readonly StackPanel _toolbar = new() { Orientation = Orientation.Horizontal, Spacing = 4 };
     private readonly TextBox _search = new() { Name = "SearchBox", Watermark = "搜索..." };
+    private Views.SlantedCaret? _searchCaret;
     private readonly TextBlock _status = new() { IsVisible = false, TextWrapping = TextWrapping.Wrap, FontSize = 11 };
     private readonly Button _cancel = new() { Content = "取消任务", IsVisible = false };
     private readonly Grid _body = new() { RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto") };
@@ -81,9 +82,13 @@ public sealed partial class MainWindow
         };
 
         _search.Classes.Add("panelSearch");
-        var search = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
-        search.Children.Add(new TextBlock { Text = "🔍", FontSize = 13, Foreground = Muted, Margin = new Thickness(0, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center });
-        Grid.SetColumn(_search, 1); search.Children.Add(_search);
+        var search = new Grid();
+        search.Children.Add(_search);
+        // 斜体文字用的斜光标，由 Views/SlantedCaret 定位和闪烁
+        var caretLine = new Avalonia.Controls.Shapes.Line { Stroke = Ink, StrokeThickness = 1, IsHitTestVisible = false, IsVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+        search.Children.Add(caretLine);
+        _searchCaret = new Views.SlantedCaret(_search, caretLine);
         var searchLine = new Border { Margin = new Thickness(20, 12, 20, 4), Padding = new Thickness(0, 0, 0, 6), BorderBrush = Divider, BorderThickness = new Thickness(0, 0, 0, 1.5), Child = search };
         Grid.SetRow(searchLine, 1); root.Children.Add(searchLine);
 

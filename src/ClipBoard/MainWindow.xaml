@@ -171,9 +171,6 @@
                         BorderBrush="{StaticResource Divider}" BorderThickness="0,0,0,1.5"
                         Padding="0,0,0,6">
                     <DockPanel>
-                        <TextBlock Text="🔍" DockPanel.Dock="Left"
-                                   Foreground="{StaticResource Muted}" Margin="0,0,10,0"
-                                   FontSize="13" VerticalAlignment="Center"/>
                         <Grid MinHeight="22">
                             <TextBlock x:Name="SearchPlaceholder" Text="搜索..."
                                        FontSize="14" FontFamily="{StaticResource Serif}" FontStyle="Italic"
@@ -186,6 +183,9 @@
                                      TextChanged="OnSearchChanged"
                                      shell:WindowChrome.IsHitTestVisibleInChrome="True"
                                      VerticalContentAlignment="Center"/>
+                            <!-- 斜体文字用的斜光标，由 Views/SlantedCaret 定位和闪烁 -->
+                            <Line x:Name="SearchCaret" Stroke="{StaticResource Ink}" IsHitTestVisible="False"
+                                  HorizontalAlignment="Left" VerticalAlignment="Top" Visibility="Collapsed"/>
                         </Grid>
                     </DockPanel>
                 </Border>

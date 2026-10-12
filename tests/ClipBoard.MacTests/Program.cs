@@ -53,6 +53,7 @@ internal static class Program
                     ("轮询复制的图片在后台处理、按顺序进入历史", AsyncImageCapture),
                     ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
                     ("更新后只在没有授权时清一次失效的旧授权", AccessibilityRepairRule),
+                    ("斜体搜索框的光标是斜的，末尾不压字、选中文字时隐藏", SearchCaret),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
                 foreach (var test in tests)
@@ -204,6 +205,38 @@ internal static class Program
         store.Save(new("123456:local_test_only", 1234));
         Check(store.Load().Token == "123456:local_test_only" && !File.ReadAllText(Path.Combine(Root, "telegram-connection.json")).Contains("local_test_only"), "钥匙串保存失败");
         store.Save(new());
+    }
+    private static async Task SearchCaret()
+    {
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)App.Current!.ApplicationLifetime!).MainWindow!;
+        window.SelectView("history"); window.Show();
+        var search = window.GetVisualDescendants().OfType<TextBox>().Single(t => t.Name == "SearchBox");
+        var caret = window.GetVisualDescendants().OfType<Avalonia.Controls.Shapes.Line>().Single();
+        var presenter = search.GetVisualDescendants().OfType<Avalonia.Controls.Presenters.TextPresenter>().Single();
+        search.Focus(); search.Text = "test"; search.CaretIndex = 4;
+        await Task.Delay(150);
+        Check(caret.IsVisible && search.CaretBrush is Avalonia.Media.ISolidColorBrush { Color.A: 0 }, "斜光标没有显示，或原生光标没有隐藏");
+        Check(caret.EndPoint.X > caret.StartPoint.X && caret.EndPoint.Y < caret.StartPoint.Y, "光标不是向右上倾斜");
+        // 光标在基线处的 x：末尾要在最后一个字的步进宽度之后留出空隙，两个字之间正好落在插入点上。
+        double AtBaseline(int index)
+        {
+            var rect = presenter.TextLayout.HitTestTextPosition(index);
+            var top = presenter.TranslatePoint(rect.TopLeft, (Visual)caret.Parent!)!.Value;
+            double baseline = top.Y + presenter.TextLayout.TextLines[0].Baseline;
+            double t = (caret.StartPoint.Y - baseline) / (caret.StartPoint.Y - caret.EndPoint.Y);
+            return caret.StartPoint.X + t * (caret.EndPoint.X - caret.StartPoint.X) - top.X;
+        }
+        Check(AtBaseline(4) > 0.5, "末尾的光标仍贴着最后一个字");
+        using (var frame = Avalonia.Headless.HeadlessWindowExtensions.CaptureRenderedFrame(window))
+            frame?.Save(Path.Combine(Repo, "out", "macos-search-caret.png"));
+        search.CaretIndex = 2;
+        await Task.Delay(150);
+        Check(caret.IsVisible && Math.Abs(AtBaseline(2)) < 0.01, "两个字之间的光标没有落在插入点上");
+        search.SelectAll();
+        await Task.Delay(150);
+        Check(!caret.IsVisible, "选中文字时仍显示光标");
+        search.Text = "";
+        window.Hide();
     }
     private static Task AccessibilityRepairRule()
     {

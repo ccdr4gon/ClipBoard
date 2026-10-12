@@ -36,6 +36,7 @@ public partial class MainWindow : Window
     private Views.StickerTabActions? _stickerActions;
     private readonly Dictionary<Guid, (Panel Actions, ListBox List, TextBlock Status, Button Cancel)> _stickerTabViews = new();
     private string _stickerStatus = "";
+    private readonly Views.SlantedCaret _searchCaret;
 
     public MainWindow()
     {
@@ -54,6 +55,7 @@ public partial class MainWindow : Window
         {
             if (_pinned) SetNoActivateStyle(true);
         };
+        _searchCaret = new Views.SlantedCaret(SearchBox, SearchCaret);
         Loaded += (_, _) =>
         {
             if (_historyTab != null) return;
