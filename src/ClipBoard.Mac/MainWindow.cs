@@ -38,6 +38,9 @@ public sealed partial class MainWindow : Window
         App.Favorites.Folders.CollectionChanged += (_, _) => { SubscribeFolders(); RenderTabs(); };
         SubscribeFolders(); RenderTabs(); RenderToolbar(); RenderCards();
         Closing += (_, e) => { if (!Application.Quitting) { e.Cancel = true; Hide(); } };
+        PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && !IsVisible) FlushPromotions(); };
+        // 记下的移动在新复制的内容进入历史后作废：否则隐藏时会把旧条目排到最新内容上面，回车粘贴的就不是剪贴板里的内容。
+        App.History.Items.CollectionChanged += (_, e) => { if (e.Action == NotifyCollectionChangedAction.Add && e.NewStartingIndex == 0) _deferredPromotions.Clear(); };
         AddHandler(KeyDownEvent, OnPanelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         // 列表里有控件拿到过焦点（单击、Tab 键、右键菜单）后，隐藏时的渲染不再沿用旧行（见 SameRenderState）。
         _items.AddHandler(GotFocusEvent, (_, _) => _rowsTouched = true, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
@@ -173,7 +176,30 @@ public sealed partial class MainWindow : Window
     {
         var item = new MenuItem { Header = title }; item.Click += async (_, _) => await action(); menu.Items.Add(item);
     }
-    private Task CopyAsync(ClipItem item, bool paste, bool plainText = false) => RunAsync(_ => Application.CopyAsync(item, paste, plainText));
+    // 与 Windows 一致：粘贴（或复制）过的条目移到最前，顶置的条目在顶置区里移到最前，收藏夹里的不动。
+    // 粘贴时面板一隐藏就移（在等待切回原应用之前，马上再打开面板也已是新顺序）；面板还显示着时
+    // （例如固定窗口里只复制）先记下，隐藏时再移，免得列表在鼠标下跳动。
+    private Task CopyAsync(ClipItem item, bool paste, bool plainText = false) => RunAsync(async _ =>
+    {
+        bool promoted = false;
+        await Application.CopyAsync(item, paste, plainText, () => { promoted = true; Promote(item); });
+        if (promoted) return;
+        if (IsVisible) { _deferredPromotions.Remove(item); _deferredPromotions.Add(item); }
+        else Promote(item);
+    });
+    private readonly List<ClipItem> _deferredPromotions = [];
+    private static void Promote(ClipItem item)
+    {
+        int pinned = App.Favorites.PinnedHistory.IndexOf(item);
+        if (pinned > 0) { App.Favorites.PinnedHistory.Move(pinned, 0); App.Favorites.Save(); }
+        else if (pinned < 0) App.History.PromoteToTop(item);
+    }
+    private void FlushPromotions()
+    {
+        if (_deferredPromotions.Count == 0) return;
+        foreach (var item in _deferredPromotions) Promote(item);
+        _deferredPromotions.Clear();
+    }
     private async Task RunAsync(Func<CancellationToken, Task> action)
     {
         if (_work != null) return;

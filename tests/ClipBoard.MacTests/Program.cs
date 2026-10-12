@@ -54,6 +54,8 @@ internal static class Program
                     ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
                     ("更新后只在没有授权时清一次失效的旧授权", AccessibilityRepairRule),
                     ("斜体搜索框的光标是斜的，末尾不压字、选中文字时隐藏", SearchCaret),
+                    ("粘贴过的条目移到最前（面板隐藏后才移动，顶置条目在顶置区内移动）", PasteMovesToTop),
+                    ("隐藏时移到最前只换一行，其余行沿用", HiddenPromotionKeepsRows),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
                 foreach (var test in tests)
@@ -190,8 +192,12 @@ internal static class Program
         using var hotkey = new MacHotkey(() => { });
         // 自动粘贴用到的系统函数都能找到；CI 没有辅助功能授权，这里不实际发送 ⌘V。
         var services = System.Runtime.InteropServices.NativeLibrary.Load("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices");
-        foreach (var name in new[] { "AXIsProcessTrusted", "CGPreflightPostEventAccess", "CGRequestPostEventAccess", "CGEventSourceCreate", "CGEventSourceSetLocalEventsFilterDuringSuppressionState", "CGEventPost" })
+        foreach (var name in new[] { "AXIsProcessTrusted", "CGPreflightPostEventAccess", "CGRequestPostEventAccess", "CGEventSourceCreate", "CGEventSourceSetLocalEventsFilterDuringSuppressionState", "CGEventPost",
+            "AXUIElementCreateApplication", "AXUIElementCopyAttributeValue", "AXUIElementSetMessagingTimeout", "CGEventSourceKeyState" })
             Check(System.Runtime.InteropServices.NativeLibrary.TryGetExport(services, name, out _), "找不到系统函数 " + name);
+        var core = System.Runtime.InteropServices.NativeLibrary.Load("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
+        foreach (var name in new[] { "CFGetTypeID", "CFBooleanGetTypeID", "CFBooleanGetValue" })
+            Check(System.Runtime.InteropServices.NativeLibrary.TryGetExport(core, name, out _), "找不到系统函数 " + name);
         _ = MacNative.IsAccessibilityTrusted;
         // 只在 GitHub Actions 的一次性 Mac 上实际清授权，证明 tccutil reset 不需要管理员权限；开发者自己的 Mac 上不动真实授权。
         if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true" && !MacNative.IsAccessibilityTrusted)
@@ -205,6 +211,103 @@ internal static class Program
         store.Save(new("123456:local_test_only", 1234));
         Check(store.Load().Token == "123456:local_test_only" && !File.ReadAllText(Path.Combine(Root, "telegram-connection.json")).Contains("local_test_only"), "钥匙串保存失败");
         store.Save(new());
+    }
+    private static async Task PasteMovesToTop()
+    {
+        var app = (App)App.Current!;
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)app.ApplicationLifetime!).MainWindow!;
+        foreach (var text in new[] { "置顶测试 1", "置顶测试 2", "置顶测试 3", "置顶测试 4" }) App.History.Capture(new(Text: text));
+        var oldest = App.History.Items.First(i => i.Text == "置顶测试 1");
+        // 固定窗口：失去焦点也不隐藏，粘贴时面板一直显示着（测试里的粘贴不隐藏面板），移动要等到隐藏时才做。
+        var pinnedField = typeof(MainWindow).GetField("_pinned", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var copy = typeof(MainWindow).GetMethod("CopyAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        void PressEnter() { window.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None); window.KeyReleaseQwerty(PhysicalKey.Enter, RawInputModifiers.None); }
+        pinnedField.SetValue(window, true);
+        try
+        {
+            window.SelectView("history"); window.Hide(); app.ShowPanel();
+            await Task.Delay(100);
+            var list = window.GetVisualDescendants().OfType<ListBox>().Single();
+            list.SelectedItem = oldest;
+            PressEnter();
+            await Task.Delay(50);
+            Check(app.LastPreviewCopy?.Item == oldest.Id, "回车没有粘贴选中的条目");
+            Check(App.History.Items[0] != oldest, $"面板还显示着时列表就移动了 visible={window.IsVisible}");
+            window.Hide();
+            await Task.Delay(50);
+            Check(App.History.Items[0] == oldest, "粘贴过的条目没有移到历史最前");
+            App.Persistence.FlushSync();
+            Check(App.Persistence.Load().History.First().Id == oldest.Id, "移动后的顺序没有保存");
+
+            // 记下的移动在新复制的内容进入历史后作废，隐藏时最新内容仍在最前。
+            var stale = App.History.Items.First(i => i.Text == "置顶测试 2");
+            app.ShowPanel(); await Task.Delay(100);
+            list.SelectedItem = stale;
+            PressEnter();
+            await Task.Delay(50);
+            App.History.Capture(new(Text: "置顶测试 新复制"));
+            window.Hide(); await Task.Delay(50);
+            Check(App.History.Items[0].Text == "置顶测试 新复制", "新复制的内容被之前记下的移动压到了下面");
+
+            // 面板隐藏时复制：立即移到最前（真正的粘贴也是先隐藏面板再移动）。
+            var hiddenCopy = App.History.Items.First(i => i.Text == "置顶测试 3");
+            await (Task)copy.Invoke(window, [hiddenCopy, false, false])!;
+            Check(App.History.Items[0] == hiddenCopy, "面板隐藏时复制的条目没有立即移到最前");
+
+            // 顶置条目：在顶置区内移到最前，原条目不再留在普通历史里。
+            var a = App.History.Items.First(i => i.Text == "置顶测试 4"); var b = App.History.Items.First(i => i.Text == "置顶测试 3");
+            App.Favorites.PinHistory(a, App.History); App.Favorites.PinHistory(b, App.History);
+            var second = App.Favorites.PinnedHistory[1];
+            app.ShowPanel(); await Task.Delay(100);
+            list.SelectedItem = second;
+            PressEnter();
+            await Task.Delay(50);
+            window.Hide(); await Task.Delay(50);
+            Check(App.Favorites.PinnedHistory[0] == second && !App.History.Items.Contains(a) && !App.History.Items.Contains(b), "顶置条目没有在顶置区内移到最前");
+        }
+        finally
+        {
+            pinnedField.SetValue(window, false);
+            foreach (var item in App.Favorites.PinnedHistory.ToArray()) App.Favorites.RemovePinnedHistory(item);
+            foreach (var item in App.History.Items.Where(i => i.Text?.StartsWith("置顶测试") == true).ToArray()) App.History.Remove(item);
+        }
+    }
+    // 隐藏时把一个条目移到最前（粘贴之后就是这样）：只有它换新容器，其余行沿用，内容与整表重建相同。
+    private static async Task HiddenPromotionKeepsRows()
+    {
+        var app = (App)App.Current!;
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)app.ApplicationLifetime!).MainWindow!;
+        for (int i = 0; i < 8; i++) App.History.Capture(new(Text: "移动条目 " + i));
+        try
+        {
+            if (!window.IsVisible) app.ShowPanel();
+            window.MouseMove(new Point(5, 5));
+            var list = window.GetVisualDescendants().OfType<ListBox>().Single();
+            ListBoxItem[] Rows() => list.GetVisualDescendants().OfType<ListBoxItem>().ToArray();
+            string Describe(ListBoxItem row) => string.Join("|", row.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text));
+            window.SelectView("history"); await Task.Delay(100);
+            window.Hide(); window.SelectView("history"); app.ShowPanel(); await Task.Delay(100);
+            var before = Rows();
+            var target = App.History.Items[3];
+            window.Hide();
+            App.History.PromoteToTop(target);
+            await Task.Delay(50);
+            app.ShowPanel(); await Task.Delay(100);
+            var after = Rows();
+            Check(after[0].DataContext == target && !before.Contains(after[0]), "移到最前的条目没有排在第一行");
+            Check(before.Where(r => r.DataContext != target).All(after.Contains), "移动一个条目后其余行被整表重建");
+            Check(after.Select(r => r.GetVisualDescendants().OfType<TextBlock>().First().Text).SequenceEqual(Enumerable.Range(1, after.Length).Select(i => i.ToString("D2"))), "移动后的行编号不对");
+            Check(list.SelectedIndex == 0, "重新打开后没有选中第一条");
+            var incremental = after.Select(Describe).ToArray();
+            window.SelectView("images"); window.SelectView("history");
+            if (!window.IsVisible) app.ShowPanel();
+            await Task.Delay(100);
+            Check(incremental.SequenceEqual(Rows().Select(Describe)), "增量移动后的列表与整表重建的内容不一致");
+        }
+        finally
+        {
+            foreach (var item in App.History.Items.Where(i => i.Text?.StartsWith("移动条目") == true).ToArray()) App.History.Remove(item);
+        }
     }
     private static async Task SearchCaret()
     {

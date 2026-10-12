@@ -130,7 +130,8 @@ public partial class App : Application
     // 界面预览和自动测试不碰系统剪贴板，只记录最后一次请求。
     internal (Guid Item, bool Paste, bool PlainText)? LastPreviewCopy { get; private set; }
     private bool _accessibilityPrompted;
-    public async Task CopyAsync(Models.ClipItem item, bool paste, bool plainText = false)
+    /// <param name="hidden">粘贴时写好剪贴板、面板隐藏后立即调用（在等待切回原应用之前），用于把条目移到最前。</param>
+    public async Task CopyAsync(Models.ClipItem item, bool paste, bool plainText = false, Action? hidden = null)
     {
         if (Preview) { LastPreviewCopy = (item.Id, paste, plainText); _window?.SetStatus("界面预览模式不读写系统剪贴板。"); return; }
         if (!MacClipboard.Write(item, Persistence, plainText)) throw new IOException("剪贴板写入失败。");
@@ -138,12 +139,13 @@ public partial class App : Application
         if (!paste) { _window?.SetStatus(plainText ? "已复制为纯文本。" : "已复制。"); return; }
         _window?.SetStatus("");
         _window?.Hide();
+        hidden?.Invoke();
         // 无论能否自动粘贴都不再弹回面板：内容已在剪贴板，焦点已交还原应用，可直接按 ⌘V。原因留到下次打开面板时显示。
         int target = PreviousApp;
-        var result = await MacNative.PasteAsync(target);
+        var (result, detail) = await MacNative.PasteAsync(target);
         bool ax = MacNative.IsAxTrusted, post = MacNative.CanPostEvents;
         Diag($"paste result={result} ax={ax} postEvent={post} target={target} {MacNative.BundleId(target)} " +
-            $"front={MacNative.ForegroundPid()} plain={plainText} macOS={Environment.OSVersion.Version} app={Environment.ProcessPath}");
+            $"front={MacNative.ForegroundPid()} {detail} plain={plainText} macOS={Environment.OSVersion.Version} app={Environment.ProcessPath}");
         // 缺哪项授权就申请哪项，每次启动只弹一次；申请会把当前运行的这份程序登记到系统授权里。
         if (!(ax && post) && !_accessibilityPrompted) { _accessibilityPrompted = true; MacNative.RequestAccessibility(); }
         if (result == MacNative.PasteResult.NotTrusted)

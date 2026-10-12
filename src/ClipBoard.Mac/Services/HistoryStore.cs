@@ -135,6 +135,14 @@ public sealed class HistoryStore(FavoritesStore favorites)
         favorites.Save();
     }
     public bool Detach(ClipItem item) => Items.Remove(item);
+    /// <summary>与 Windows 的 HistoryStore.PromoteToTop 相同：用过的条目移到历史最前并保存。</summary>
+    public void PromoteToTop(ClipItem item)
+    {
+        int index = Items.IndexOf(item);
+        if (index <= 0) return;
+        Items.Move(index, 0);
+        favorites.Save();
+    }
     public void Remove(ClipItem item)
     {
         if (!Items.Remove(item)) return;

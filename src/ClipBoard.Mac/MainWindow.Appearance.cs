@@ -226,22 +226,50 @@ public sealed partial class MainWindow
     // 保留的行必须与此刻重新生成的完全相同，否则换成新容器（打开面板时重新生成）：
     // 条目的显示数据变了（例如同一段文字补上了格式）、鼠标停在行上（悬停底色、提示）、
     // 或这是该条目第一次生成的行（第一次排版时回退字体可能与之后不同，原先下一次渲染就会换掉它）。
-    // 改动太多或顺序变了（例如“向前移动”）时返回 false，整表重建。
+    // 顺序变了的条目（例如粘贴后移到最前）当作删除再插入，只有它们换新容器；改动太多时返回 false，整表重建。
     private const int MaxRowEdits = 24;
     private bool TrySyncRows(IReadOnlyList<ClipItem> target)
     {
         var wanted = new HashSet<ClipItem>(target, ReferenceEqualityComparer.Instance);
         var current = new HashSet<ClipItem>(_visible, ReferenceEqualityComparer.Instance);
-        if (!_visible.Where(wanted.Contains).SequenceEqual(target.Where(current.Contains), ReferenceEqualityComparer.Instance)) return false;
-        int kept = target.Count(current.Contains);
+        if (wanted.Count != target.Count || current.Count != _visible.Count) return false; // 同一条目出现两次：整表重建
+        if (MovedRows(target, current) is not { } moved) return false;
+        int kept = target.Count(current.Contains) - moved.Count;
         var stale = StaleRows(wanted);
-        if (stale == null || _visible.Count - kept + target.Count - kept + stale.Count > MaxRowEdits) return false;
+        if (stale == null) return false;
+        stale.ExceptWith(moved); // 移动的条目本来就换新容器
+        if (_visible.Count - kept + target.Count - kept + stale.Count > MaxRowEdits) return false; // 移动 = 删除 + 插入，算两次
         for (int i = _visible.Count - 1; i >= 0; i--)
-            if (!wanted.Contains(_visible[i])) { _built.Remove(_visible[i]); _rowHistory.Remove(_visible[i]); _visible.RemoveAt(i); }
+        {
+            var item = _visible[i];
+            if (wanted.Contains(item) && !moved.Contains(item)) continue;
+            _built.Remove(item);
+            if (!wanted.Contains(item)) _rowHistory.Remove(item); // 移动的条目生成过行，与整表重建（IntersectWith）一样仍算生成过
+            _visible.RemoveAt(i);
+        }
         for (int i = 0; i < target.Count; i++)
             if (i >= _visible.Count || !ReferenceEquals(_visible[i], target[i])) _visible.Insert(i, target[i]);
         ReplaceRows(stale);
         return true;
+    }
+    /// <summary>相对顺序变了的保留条目：保留最长的一段顺序不变的条目（最长递增子序列），其余当作删除再插入；移动太多时返回 null。</summary>
+    private HashSet<ClipItem>? MovedRows(IReadOnlyList<ClipItem> target, HashSet<ClipItem> current)
+    {
+        var position = new Dictionary<ClipItem, int>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < target.Count; i++) if (current.Contains(target[i])) position[target[i]] = i;
+        var kept = _visible.Where(position.ContainsKey).ToArray();
+        var tails = new List<int>(); var previous = new int[kept.Length];
+        for (int k = 0; k < kept.Length; k++)
+        {
+            int at = position[kept[k]], lo = 0, hi = tails.Count;
+            while (lo < hi) { int mid = (lo + hi) / 2; if (position[kept[tails[mid]]] < at) lo = mid + 1; else hi = mid; }
+            previous[k] = lo > 0 ? tails[lo - 1] : -1;
+            if (lo == tails.Count) tails.Add(k); else tails[lo] = k;
+        }
+        if (2 * (kept.Length - tails.Count) > MaxRowEdits) return null;
+        var moved = new HashSet<ClipItem>(kept, ReferenceEqualityComparer.Instance);
+        for (int k = tails.Count > 0 ? tails[^1] : -1; k >= 0; k = previous[k]) moved.Remove(kept[k]);
+        return moved;
     }
     /// <summary>需要换新容器的已生成行；超过上限时返回 null。</summary>
     private HashSet<ClipItem>? StaleRows(HashSet<ClipItem>? among = null)
