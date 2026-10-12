@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", choices=["arm64", "x64"], default="arm64")
-    parser.add_argument("--version", default="2.1.1")
+    parser.add_argument("--version", default="2.1.2")
     parser.add_argument("--sign", default="-", help="On macOS: signing identity (name or SHA-1), or '-' for local ad-hoc signing. "
                         "Releases use one fixed certificate so macOS keeps the Accessibility grant across updates.")
     args = parser.parse_args()
