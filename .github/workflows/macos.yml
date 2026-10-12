@@ -26,10 +26,38 @@ jobs:
         with:
           name: ClipBoard-macOS-previews
           path: out/macos-*-preview.png
+      # Every release is signed with the same self-signed certificate, so the app's designated requirement
+      # stays the same across updates and macOS keeps the Accessibility / Device Control grant.
+      # Without the secret (forks) the packages fall back to ad-hoc signing.
+      - name: Import signing certificate
+        id: signing
+        env:
+          P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then
+            echo "identity=-" >> "$GITHUB_OUTPUT"
+            echo "No signing certificate secret; packages are ad-hoc signed."
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/clipboard-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -p codesigning "$keychain" | awk '/ClipBoard Code Signing/ { print $2; exit }')"
+          test -n "$identity"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "Signing with certificate $identity"
       - name: Package Apple Silicon
-        run: python3 scripts/package-macos.py --arch arm64
+        run: python3 scripts/package-macos.py --arch arm64 --sign "${{ steps.signing.outputs.identity }}"
       - name: Package Intel
-        run: python3 scripts/package-macos.py --arch x64
+        run: python3 scripts/package-macos.py --arch x64 --sign "${{ steps.signing.outputs.identity }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ClipBoard-macOS

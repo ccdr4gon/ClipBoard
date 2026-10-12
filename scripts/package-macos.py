@@ -19,7 +19,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", choices=["arm64", "x64"], default="arm64")
     parser.add_argument("--version", default="2.1.1")
-    parser.add_argument("--sign", default="-", help="On macOS: Developer ID identity or '-' for local ad-hoc signing")
+    parser.add_argument("--sign", default="-", help="On macOS: signing identity (name or SHA-1), or '-' for local ad-hoc signing. "
+                        "Releases use one fixed certificate so macOS keeps the Accessibility grant across updates.")
     args = parser.parse_args()
     output = ROOT / "dist" / f"macos-{args.arch}"
     bundle = output / "ClipBoard.app"
@@ -69,6 +70,12 @@ def main():
                 sign(file, args.sign)
         sign(bundle, args.sign)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
+        # TCC remembers a grant by the designated requirement. Ad-hoc signing pins it to this build's cdhash,
+        # so every update loses the grant; a certificate-based requirement survives updates.
+        requirement = subprocess.run(["codesign", "-d", "-r-", str(bundle)], capture_output=True, text=True, check=True)
+        print((requirement.stdout + requirement.stderr).strip())
+        if args.sign != "-" and "cdhash" in requirement.stdout + requirement.stderr:
+            raise RuntimeError("Designated requirement still depends on the cdhash; the grant would not survive updates")
     else:
         print("Built on Windows/Linux: bundle has not been code-signed or notarized on macOS.")
     archive = output / f"ClipBoard-{args.version}-macos-{args.arch}.zip"
@@ -87,7 +94,9 @@ def main():
 def sign(path, identity):
     command = ["codesign", "--force", "--sign", identity,
                "--entitlements", str(ROOT / "src/ClipBoard.Mac/macos.entitlements")]
-    if identity != "-":
+    # Hardened runtime and Apple timestamps are for notarized Developer ID builds; with the self-signed release
+    # certificate (no team ID) library validation would reject the bundled dylibs.
+    if identity.startswith("Developer ID"):
         command += ["--options", "runtime", "--timestamp"]
     subprocess.run(command + [str(path)], check=True)
 
