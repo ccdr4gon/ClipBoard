@@ -339,7 +339,7 @@ public sealed partial class MainWindow : Window
         string trust = !OperatingSystem.IsMacOS() || App.Preview ? "" :
             $"当前状态：辅助功能{(MacNative.IsAxTrusted ? "已授权" : "未授权")}，发送按键{(MacNative.CanPostEvents ? "已授权" : "未授权")}。";
         panel.Children.Add(new TextBlock { Text = "复制和记录历史不需要辅助功能权限。自动粘贴需要在 隐私与安全性 → " + App.AccessibilityPane + " 中允许 ClipBoard；未授权时可手动按 ⌘V。" + trust +
-            "\n更新应用后若开关显示已打开但仍无法自动粘贴，请在列表里用“−”移除 ClipBoard 再重新添加，然后退出并重新打开 ClipBoard。" +
+            "\n更新应用后授权会保留；从旧版本升级时 ClipBoard 会自动清掉失效的旧授权并弹出提示，允许一次即可。" +
             "\n请只保留“应用程序”里的一份 ClipBoard.app：在“下载”里反复解压会生成 ClipBoard 2、3… 多个副本，授权会对不上。", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(message);
         var dialog = new Window { Title = "设置", Width = 470, SizeToContent = SizeToContent.Height, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner };

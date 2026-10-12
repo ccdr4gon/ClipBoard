@@ -52,6 +52,7 @@ internal static class Program
                     ("右键预览图片显示原图", ImagePreviewDialog),
                     ("轮询复制的图片在后台处理、按顺序进入历史", AsyncImageCapture),
                     ("设置弹窗层级、快捷键重入与关闭后恢复", () => SettingsDialogs(false)),
+                    ("更新后只在没有授权时清一次失效的旧授权", AccessibilityRepairRule),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
                 foreach (var test in tests)
@@ -191,10 +192,28 @@ internal static class Program
         foreach (var name in new[] { "AXIsProcessTrusted", "CGPreflightPostEventAccess", "CGRequestPostEventAccess", "CGEventSourceCreate", "CGEventSourceSetLocalEventsFilterDuringSuppressionState", "CGEventPost" })
             Check(System.Runtime.InteropServices.NativeLibrary.TryGetExport(services, name, out _), "找不到系统函数 " + name);
         _ = MacNative.IsAccessibilityTrusted;
+        // 只在 GitHub Actions 的一次性 Mac 上实际清授权，证明 tccutil reset 不需要管理员权限；开发者自己的 Mac 上不动真实授权。
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true" && !MacNative.IsAccessibilityTrusted)
+        {
+            var dir = Path.Combine(Root, "accessibility-reset"); Directory.CreateDirectory(dir);
+            var line = MacAccessibilityRepair.RunOnceAsync(dir).GetAwaiter().GetResult();
+            Check(line != null && line.Contains("accessibility=True") && line.Contains("postEvent=True"), "tccutil reset 失败：" + line);
+            Check(MacAccessibilityRepair.RunOnceAsync(dir).GetAwaiter().GetResult() == null, "同一份程序清了两次授权");
+        }
         var store = new TelegramConnectionStore(Root);
         store.Save(new("123456:local_test_only", 1234));
         Check(store.Load().Token == "123456:local_test_only" && !File.ReadAllText(Path.Combine(Root, "telegram-connection.json")).Contains("local_test_only"), "钥匙串保存失败");
         store.Save(new());
+    }
+    private static Task AccessibilityRepairRule()
+    {
+        var build = MacAccessibilityRepair.BuildStamp();
+        Check(build == MacAccessibilityRepair.BuildStamp() && build.Length > 0, "同一份程序的标识不稳定");
+        Check(MacAccessibilityRepair.ShouldReset(trusted: false, lastResetBuild: null, build), "没有授权时没有清旧授权");
+        Check(!MacAccessibilityRepair.ShouldReset(trusted: true, lastResetBuild: null, build), "已有授权时不应清");
+        Check(!MacAccessibilityRepair.ShouldReset(trusted: false, lastResetBuild: build, build), "同一份程序清了两次");
+        Check(MacAccessibilityRepair.ShouldReset(trusted: false, lastResetBuild: "old|1|2", build), "更新后没有清旧版本留下的授权");
+        return Task.CompletedTask;
     }
     private static async Task PanelLayout()
     {

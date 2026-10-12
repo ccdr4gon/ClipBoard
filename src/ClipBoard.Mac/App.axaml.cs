@@ -59,6 +59,7 @@ public partial class App : Application
                 _tray = new TrayIcon { Icon = new WindowIcon(icon), ToolTipText = "ClipBoard", Menu = menu, IsVisible = true };
                 MacOSProperties.SetIsTemplateIcon(_tray, true); // 模板图：深色菜单栏显示为白色，浅色菜单栏显示为黑色
                 TrayIcon.SetIcons(this, new TrayIcons { _tray });
+                _ = RepairAccessibilityAsync();
             }
             desktop.Exit += (_, _) => { History.DrainForExit(); Favorites.Save(); Persistence.FlushSync(); _poll?.Stop(); _hotkey?.Dispose(); _tray?.Dispose(); };
         }
@@ -109,6 +110,23 @@ public partial class App : Application
         if (!_window.IsVisible) _window.ResetView();
         _window.Show(); _window.Activate(); _window.FocusSearch();
     }
+    // 从临时签名的旧版本更新上来时，系统里留着失效的授权条目：开关显示打开但不生效，也不再弹提示。
+    // 启动时清掉它并立即弹出授权提示，用户只需在提示里允许一次，不用去终端运行命令。
+    private async Task RepairAccessibilityAsync()
+    {
+        try
+        {
+            if (await MacAccessibilityRepair.RunOnceAsync(Persistence.RootDirectory) is not { } line) return;
+            Diag(line);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (_accessibilityPrompted || MacNative.IsAccessibilityTrusted) return;
+                _accessibilityPrompted = true;
+                MacNative.RequestAccessibility();
+            });
+        }
+        catch (Exception ex) { Diag("accessibility reset failed: " + ex.Message); }
+    }
     // 界面预览和自动测试不碰系统剪贴板，只记录最后一次请求。
     internal (Guid Item, bool Paste, bool PlainText)? LastPreviewCopy { get; private set; }
     private bool _accessibilityPrompted;
@@ -129,8 +147,8 @@ public partial class App : Application
         // 缺哪项授权就申请哪项，每次启动只弹一次；申请会把当前运行的这份程序登记到系统授权里。
         if (!(ax && post) && !_accessibilityPrompted) { _accessibilityPrompted = true; MacNative.RequestAccessibility(); }
         if (result == MacNative.PasteResult.NotTrusted)
-            _window?.SetStatus("已复制，但没有自动粘贴：ClipBoard 还没有辅助功能权限。请到系统设置 → 隐私与安全性 → " + AccessibilityPane + "打开 ClipBoard；" +
-                "更新应用后开关虽显示已打开却无效时，先用“−”移除 ClipBoard 再重新添加，然后退出并重新打开 ClipBoard。");
+            _window?.SetStatus("已复制，但没有自动粘贴：ClipBoard 还没有辅助功能权限。请在系统弹出的提示里允许，或到系统设置 → 隐私与安全性 → " +
+                AccessibilityPane + "打开 ClipBoard。");
         else if (result != MacNative.PasteResult.Pasted)
             _window?.SetStatus("已复制，但没能切回原应用自动粘贴，请切回后按 ⌘V。");
         else if (!post)
