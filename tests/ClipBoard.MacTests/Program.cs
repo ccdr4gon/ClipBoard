@@ -56,6 +56,7 @@ internal static class Program
                     ("斜体搜索框的光标是斜的，末尾不压字、选中文字时隐藏", SearchCaret),
                     ("粘贴过的条目移到最前（面板隐藏后才移动，顶置条目在顶置区内移动）", PasteMovesToTop),
                     ("隐藏时移到最前只换一行，其余行沿用", HiddenPromotionKeepsRows),
+                    ("中文条目截断显示时字形不丢失", LongChineseRowGlyphs),
                 ];
                 if (nativeDialogs) tests = [("Mac 原生设置弹窗层级与恢复", () => SettingsDialogs(true))];
                 foreach (var test in tests)
@@ -270,6 +271,35 @@ internal static class Program
             pinnedField.SetValue(window, false);
             foreach (var item in App.Favorites.PinnedHistory.ToArray()) App.Favorites.RemovePinnedHistory(item);
             foreach (var item in App.History.Items.Where(i => i.Text?.StartsWith("置顶测试") == true).ToArray()) App.History.Remove(item);
+        }
+    }
+    // 列表行用 CharacterEllipsis 截断；截断后的文字要重新排版，中文必须仍用能显示它的回退字体，不能变成方框/问号。
+    private static async Task LongChineseRowGlyphs()
+    {
+        var app = (App)App.Current!;
+        var window = (MainWindow)((ClassicDesktopStyleApplicationLifetime)app.ApplicationLifetime!).MainWindow!;
+        string shortText = "短的中文条目", longText = string.Concat(Enumerable.Repeat("这是一段很长的中文剪贴板内容，用来测试截断显示。", 12));
+        App.History.Capture(new(Text: shortText)); App.History.Capture(new(Text: longText));
+        try
+        {
+            window.SelectView("history");
+            if (!window.IsVisible) app.ShowPanel();
+            await Task.Delay(150);
+            using (var frame = Avalonia.Headless.HeadlessWindowExtensions.CaptureRenderedFrame(window))
+                frame?.Save(Path.Combine(Repo, "out", "macos-long-chinese-preview.png"));
+            foreach (var text in new[] { shortText, longText })
+            {
+                var block = window.GetVisualDescendants().OfType<TextBlock>().First(t => t.Text == text);
+                var runs = block.TextLayout.TextLines.SelectMany(l => l.TextRuns).OfType<Avalonia.Media.TextFormatting.ShapedTextRun>().ToArray();
+                int missing = runs.Sum(r => r.GlyphRun.GlyphInfos.Count(g => g.GlyphIndex == 0));
+                string faces = string.Join(",", runs.Select(r => r.Properties.Typeface.FontFamily.Name).Distinct());
+                Console.WriteLine($"  {(text == longText ? "long" : "short")}: runs={runs.Length} missingGlyphs={missing} typefaces={faces}");
+                Check(missing == 0, $"{(text == longText ? "截断的长" : "短")}中文条目有 {missing} 个字形缺失（字体 {faces}）");
+            }
+        }
+        finally
+        {
+            foreach (var item in App.History.Items.Where(i => i.Text == shortText || i.Text == longText).ToArray()) App.History.Remove(item);
         }
     }
     // 隐藏时把一个条目移到最前（粘贴之后就是这样）：只有它换新容器，其余行沿用，内容与整表重建相同。
